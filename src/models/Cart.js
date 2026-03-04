@@ -6,7 +6,7 @@ const CartItemSchema = new mongoose.Schema(
     qty: { type: Number, required: true, min: 1 },
 
     // Snapshot fields so cart doesn't break if product changes
-    priceSnapshot: { type: Number, required: true },
+    priceSnapshot: { type: Number, required: true  },
     titleSnapshot: { type: String, required: true },
     imageSnapshot: { type: String, default: null },
   },
