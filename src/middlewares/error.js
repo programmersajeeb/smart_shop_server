@@ -1,11 +1,16 @@
 const multer = require("multer");
 
 function notFound(req, res, next) {
-  res.status(404).json({ message: "Route not found" });
+  res.status(404).json({
+    ok: false,
+    message: "Route not found",
+    path: req.originalUrl,
+  });
 }
 
 function errorHandler(err, req, res, next) {
-  const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  const isProd =
+    String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
   let status = err?.statusCode || err?.status || 500;
   let message = err?.message || "Server error";
@@ -31,10 +36,38 @@ function errorHandler(err, req, res, next) {
     details = err?.keyValue || null;
   }
 
-  if (!isProd) console.error(err);
+  // JWT errors
+  if (err?.name === "JsonWebTokenError") {
+    status = 401;
+    message = "Invalid token";
+  }
 
-  const payload = { message, details };
-  if (!isProd && err?.stack) payload.stack = err.stack;
+  if (err?.name === "TokenExpiredError") {
+    status = 401;
+    message = "Token expired";
+  }
+
+  // Cast error (invalid Mongo ID)
+  if (err?.name === "CastError") {
+    status = 400;
+    message = "Invalid ID format";
+  }
+
+  // Dev logging
+  if (!isProd) {
+    console.error("❌ ERROR:", err);
+  }
+
+  const payload = {
+    ok: false,
+    message,
+    details,
+    requestId: req.requestId || null,
+  };
+
+  if (!isProd && err?.stack) {
+    payload.stack = err.stack;
+  }
 
   res.status(status).json(payload);
 }

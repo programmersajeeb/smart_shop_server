@@ -11,20 +11,28 @@ const User = require("../models/User");
 const RefreshToken = require("../models/RefreshToken");
 
 function getCookieOptions() {
-  const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+  const isProd =
+    String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
-  // ✅ Cross-site support: set COOKIE_SAMESITE=none when frontend+backend are on different domains
+  // Support both COOKIE_SAMESITE and COOKIE_SAME_SITE
+  const sameSiteEnv =
+    process.env.COOKIE_SAMESITE ?? process.env.COOKIE_SAME_SITE;
+
   const sameSiteRaw = String(
-    process.env.COOKIE_SAMESITE || (isProd ? "none" : "lax")
+    sameSiteEnv || (isProd ? "none" : "lax")
   ).toLowerCase();
-  const sameSite = ["lax", "strict", "none"].includes(sameSiteRaw) ? sameSiteRaw : "lax";
+
+  const sameSite = ["lax", "strict", "none"].includes(sameSiteRaw)
+    ? sameSiteRaw
+    : "lax";
 
   // sameSite=none হলে secure=true MUST
-  const secureEnv = String(process.env.COOKIE_SECURE || "").toLowerCase() === "true";
-  const secure = sameSite === "none" ? true : (secureEnv || isProd);
+  const secureEnv =
+    String(process.env.COOKIE_SECURE || "").toLowerCase() === "true";
+  const secure = sameSite === "none" ? true : secureEnv || isProd;
 
-  // ✅ Optional: subdomain/domain cookie support (set only if provided)
   const domainRaw = String(process.env.COOKIE_DOMAIN || "").trim();
+
   const base = {
     httpOnly: true,
     secure,
@@ -39,7 +47,6 @@ function getRefreshCookieName() {
   return process.env.COOKIE_NAME || "rt";
 }
 
-// ✅ Central helper: stale/invalid refresh cookie থাকলে auto-clear
 function clearRefreshCookie(res) {
   const cookieName = getRefreshCookieName();
   try {
@@ -47,17 +54,13 @@ function clearRefreshCookie(res) {
   } catch {}
 }
 
-/**
- * ✅ Enterprise user payload (RBAC ready)
- * Keep response stable for frontend.
- */
 function publicUser(user) {
   return {
-    id: user._id,
-    email: user.email,
-    phone: user.phone,
-    displayName: user.displayName,
-    photoURL: user.photoURL,
+    id: String(user._id),
+    email: user.email || null,
+    phone: user.phone || null,
+    displayName: user.displayName || null,
+    photoURL: user.photoURL || null,
 
     role: user.role,
     roleLevel: Number(user.roleLevel || 0),
@@ -65,11 +68,6 @@ function publicUser(user) {
   };
 }
 
-/**
- * ✅ Token claims (RBAC ready)
- * Note: server will still enforce using DB in middleware (next step),
- * but claims help UI + quick gating.
- */
 function tokenClaims(user) {
   return {
     sub: String(user._id),
@@ -79,16 +77,48 @@ function tokenClaims(user) {
   };
 }
 
+async function issueSession(user, req, res) {
+  const accessToken = signAccessToken(tokenClaims(user));
+  const refreshToken = signRefreshToken(tokenClaims(user));
+
+  const tokenHash = sha256(refreshToken);
+  const payload = verifyRefreshToken(refreshToken);
+  const expiresAt = new Date(payload.exp * 1000);
+
+  await RefreshToken.create({
+    user: user._id,
+    tokenHash,
+    expiresAt,
+    userAgent: req.headers["user-agent"] || null,
+    ip: req.ip || null,
+  });
+
+  res.cookie(getRefreshCookieName(), refreshToken, {
+    ...getCookieOptions(),
+    expires: expiresAt,
+  });
+
+  return { accessToken, expiresAt, refreshToken };
+}
+
 // POST /auth/firebase
 exports.firebase = async (req, res, next) => {
   try {
-    const { idToken } = req.body || {};
-    if (!idToken) throw new ApiError(400, "idToken required");
+    const rawIdToken = req.body?.idToken;
+    const idToken = String(rawIdToken || "").trim();
+
+    if (!idToken) {
+      throw new ApiError(400, "idToken required");
+    }
 
     const admin = initFirebase();
-    const decoded = await admin.auth().verifyIdToken(idToken);
+    const decoded = await admin.auth().verifyIdToken(idToken, true);
 
     const firebaseUid = decoded.uid;
+    if (!firebaseUid) {
+      throw new ApiError(401, "Invalid Firebase token");
+    }
+
     const email = decoded.email || null;
     const phone = decoded.phone_number || null;
     const displayName = decoded.name || null;
@@ -114,30 +144,14 @@ exports.firebase = async (req, res, next) => {
       await user.save();
     }
 
-    if (user.isBlocked) throw new ApiError(403, "User blocked");
+    if (user.isBlocked) {
+      throw new ApiError(403, "User blocked");
+    }
 
-    const accessToken = signAccessToken(tokenClaims(user));
-    const refreshToken = signRefreshToken(tokenClaims(user));
-
-    // store hashed refresh token for rotation/revocation
-    const tokenHash = sha256(refreshToken);
-    const payload = verifyRefreshToken(refreshToken);
-    const expiresAt = new Date(payload.exp * 1000);
-
-    await RefreshToken.create({
-      user: user._id,
-      tokenHash,
-      expiresAt,
-      userAgent: req.headers["user-agent"] || null,
-      ip: req.ip || null,
-    });
-
-    res.cookie(getRefreshCookieName(), refreshToken, {
-      ...getCookieOptions(),
-      expires: expiresAt,
-    });
+    const { accessToken } = await issueSession(user, req, res);
 
     res.json({
+      ok: true,
       accessToken,
       user: publicUser(user),
     });
@@ -150,13 +164,10 @@ exports.firebase = async (req, res, next) => {
 exports.refresh = async (req, res, next) => {
   try {
     const cookieName = getRefreshCookieName();
-    const token = req.cookies?.[cookieName];
-
-    // ✅ NEW: stale cookie cleanup
-    const clear = () => clearRefreshCookie(res);
+    const token = String(req.cookies?.[cookieName] || "").trim();
 
     if (!token) {
-      clear();
+      clearRefreshCookie(res);
       throw new ApiError(401, "No refresh token");
     }
 
@@ -164,7 +175,13 @@ exports.refresh = async (req, res, next) => {
     try {
       payload = verifyRefreshToken(token);
     } catch {
-      clear();
+      clearRefreshCookie(res);
+      throw new ApiError(401, "Invalid refresh token");
+    }
+
+    const userId = payload?.sub;
+    if (!userId) {
+      clearRefreshCookie(res);
       throw new ApiError(401, "Invalid refresh token");
     }
 
@@ -172,25 +189,35 @@ exports.refresh = async (req, res, next) => {
     const existing = await RefreshToken.findOne({ tokenHash });
 
     if (!existing) {
-      clear();
+      clearRefreshCookie(res);
       throw new ApiError(401, "Refresh token not found");
     }
+
     if (existing.revokedAt) {
-      clear();
+      clearRefreshCookie(res);
+
+      // Optional defensive action: revoke all active tokens for this user on token reuse
+      await RefreshToken.updateMany(
+        { user: existing.user, revokedAt: null },
+        { $set: { revokedAt: new Date() } }
+      );
+
       throw new ApiError(401, "Refresh token revoked");
     }
+
     if (existing.expiresAt.getTime() < Date.now()) {
-      clear();
+      clearRefreshCookie(res);
       throw new ApiError(401, "Refresh token expired");
     }
 
-    const user = await User.findById(payload.sub);
+    const user = await User.findById(userId);
     if (!user) {
-      clear();
+      clearRefreshCookie(res);
       throw new ApiError(401, "User not found");
     }
+
     if (user.isBlocked) {
-      clear();
+      clearRefreshCookie(res);
       throw new ApiError(403, "User blocked");
     }
 
@@ -201,7 +228,6 @@ exports.refresh = async (req, res, next) => {
     const newPayload = verifyRefreshToken(newRefresh);
     const newExpiresAt = new Date(newPayload.exp * 1000);
 
-    // rotate: revoke old and create new
     existing.revokedAt = new Date();
     existing.replacedByTokenHash = newHash;
     await existing.save();
@@ -219,8 +245,10 @@ exports.refresh = async (req, res, next) => {
       expires: newExpiresAt,
     });
 
-    // ✅ Keep same response shape (only accessToken), but token now includes RBAC claims
-    res.json({ accessToken: newAccess });
+    res.json({
+      ok: true,
+      accessToken: newAccess,
+    });
   } catch (e) {
     next(e);
   }
@@ -230,7 +258,7 @@ exports.refresh = async (req, res, next) => {
 exports.logout = async (req, res, next) => {
   try {
     const cookieName = getRefreshCookieName();
-    const token = req.cookies?.[cookieName];
+    const token = String(req.cookies?.[cookieName] || "").trim();
 
     if (token) {
       const tokenHash = sha256(token);
@@ -240,7 +268,6 @@ exports.logout = async (req, res, next) => {
       );
     }
 
-    // ✅ NEW: central clear helper
     clearRefreshCookie(res);
 
     res.json({ ok: true });
@@ -253,10 +280,19 @@ exports.logout = async (req, res, next) => {
 exports.me = async (req, res, next) => {
   try {
     const userId = req.user?.sub;
-    const user = await User.findById(userId).select("-__v");
-    if (!user) throw new ApiError(404, "User not found");
+    if (!userId) {
+      throw new ApiError(401, "Unauthorized");
+    }
 
-    res.json(publicUser(user));
+    const user = await User.findById(userId).select("-__v");
+    if (!user) {
+      throw new ApiError(404, "User not found");
+    }
+
+    res.json({
+      ok: true,
+      user: publicUser(user),
+    });
   } catch (e) {
     next(e);
   }

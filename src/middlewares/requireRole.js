@@ -1,71 +1,87 @@
 const ApiError = require("../utils/apiError");
 
-function normalizePermissions(u) {
-  const list = Array.isArray(u?.permissions) ? u.permissions : [];
+function normalizeValues(list = []) {
+  const input = Array.isArray(list) ? list : [];
   const out = [];
   const seen = new Set();
 
-  for (const raw of list) {
-    const p = String(raw || "").trim();
-    if (!p) continue;
-    const k = p.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(k);
+  for (const raw of input) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
   }
+
   return out;
 }
 
-function hasAnyPerm(userPerms, anyList) {
-  if (!Array.isArray(anyList) || anyList.length === 0) return false;
-  return anyList.some((p) => userPerms.includes(String(p || "").trim().toLowerCase()));
+function normalizePermissions(user) {
+  return normalizeValues(user?.permissions);
 }
 
-function hasAllPerm(userPerms, allList) {
-  if (!Array.isArray(allList) || allList.length === 0) return false;
-  return allList.every((p) => userPerms.includes(String(p || "").trim().toLowerCase()));
+function hasAnyPermission(userPerms, permissionList) {
+  const normalized = normalizeValues(permissionList);
+  if (!normalized.length) return false;
+
+  return normalized.some(
+    (permission) => userPerms.includes(permission) || userPerms.includes("*")
+  );
+}
+
+function hasAllPermissions(userPerms, permissionList) {
+  const normalized = normalizeValues(permissionList);
+  if (!normalized.length) return false;
+
+  return normalized.every(
+    (permission) => userPerms.includes(permission) || userPerms.includes("*")
+  );
 }
 
 module.exports = function requireRole(...args) {
-  let opts = null;
+  let options = {};
   const roles = [];
 
-  for (const a of args) {
-    if (a && typeof a === "object" && !Array.isArray(a)) {
-      opts = { ...(opts || {}), ...a };
-    } else {
-      const r = String(a || "").trim();
-      if (r) roles.push(r.toLowerCase());
+  for (const arg of args) {
+    if (arg && typeof arg === "object" && !Array.isArray(arg)) {
+      options = { ...options, ...arg };
+      continue;
     }
+
+    const role = String(arg || "").trim().toLowerCase();
+    if (role) roles.push(role);
   }
 
-  const mode = String(opts?.mode || "any").toLowerCase() === "all" ? "all" : "any";
-  const minLevelRaw = Number(opts?.minLevel);
-  const minLevel = Number.isFinite(minLevelRaw) ? minLevelRaw : null;
+  const normalizedRoles = normalizeValues(roles);
+  const mode = String(options.mode || "any").trim().toLowerCase() === "all" ? "all" : "any";
 
-  const anyPermissions = Array.isArray(opts?.anyPermissions) ? opts.anyPermissions : [];
-  const allPermissions = Array.isArray(opts?.allPermissions) ? opts.allPermissions : [];
+  const parsedMinLevel = Number(options.minLevel);
+  const minLevel = Number.isFinite(parsedMinLevel) ? parsedMinLevel : null;
+
+  const anyPermissions = normalizeValues(options.anyPermissions);
+  const allPermissions = normalizeValues(options.allPermissions);
 
   return (req, res, next) => {
-    const role = String(req.user?.role || "").toLowerCase();
-    if (!role) return next(new ApiError(401, "Unauthorized"));
+    const role = String(req.user?.role || "").trim().toLowerCase();
+    if (!role) {
+      return next(new ApiError(401, "Unauthorized"));
+    }
 
     const roleLevel = Number(req.user?.roleLevel || 0);
-    const perms = normalizePermissions(req.user);
+    const userPerms = normalizePermissions(req.user);
 
-    // ✅ Enterprise super-allow (backward compatible)
     const isSuper =
-      role === "admin" ||
       role === "superadmin" ||
       (Number.isFinite(roleLevel) && roleLevel >= 100) ||
-      perms.includes("*");
+      userPerms.includes("*");
 
-    if (isSuper) return next();
+    if (isSuper) {
+      return next();
+    }
 
     const checks = [];
 
-    if (roles.length) {
-      checks.push(roles.includes(role));
+    if (normalizedRoles.length) {
+      checks.push(normalizedRoles.includes(role));
     }
 
     if (minLevel !== null) {
@@ -73,19 +89,23 @@ module.exports = function requireRole(...args) {
     }
 
     if (anyPermissions.length) {
-      checks.push(hasAnyPerm(perms, anyPermissions));
+      checks.push(hasAnyPermission(userPerms, anyPermissions));
     }
 
     if (allPermissions.length) {
-      checks.push(hasAllPerm(perms, allPermissions));
+      checks.push(hasAllPermissions(userPerms, allPermissions));
     }
 
-    // no constraints -> allow
-    if (!checks.length) return next();
+    if (!checks.length) {
+      return next();
+    }
 
-    const ok = mode === "all" ? checks.every(Boolean) : checks.some(Boolean);
-    if (!ok) return next(new ApiError(403, "Forbidden"));
+    const allowed = mode === "all" ? checks.every(Boolean) : checks.some(Boolean);
 
-    next();
+    if (!allowed) {
+      return next(new ApiError(403, "Forbidden"));
+    }
+
+    return next();
   };
 };

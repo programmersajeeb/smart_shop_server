@@ -7,20 +7,19 @@ function signAccessToken(payload) {
   });
 }
 
-// ✅ FIX: refresh token always unique (jwtid/jti)
 function signRefreshToken(payload) {
   return jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
     expiresIn: process.env.JWT_REFRESH_EXPIRES || "30d",
-    jwtid: crypto.randomUUID(), // ✅ makes token unique every time
+    jwtid: crypto.randomUUID(),
   });
 }
 
 function verifyAccessToken(token) {
-  return jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+  return jwt.verify(String(token || "").trim(), process.env.JWT_ACCESS_SECRET);
 }
 
 function verifyRefreshToken(token) {
-  return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+  return jwt.verify(String(token || "").trim(), process.env.JWT_REFRESH_SECRET);
 }
 
 module.exports = {

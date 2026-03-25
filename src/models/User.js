@@ -1,47 +1,198 @@
 const mongoose = require("mongoose");
 
-const UserSchema = new mongoose.Schema(
-  {
-    firebaseUid: { type: String, required: true, unique: true, index: true },
-    email: { type: String, default: null, index: true },
-    phone: { type: String, default: null, index: true },
-    displayName: { type: String, default: null },
-    photoURL: { type: String, default: null },
+const USER_ROLES = [
+  "superadmin",
+  "admin",
+  "manager",
+  "support",
+  "editor",
+  "auditor",
+  "user",
+];
 
-    role: { type: String, enum: ["user", "admin"], default: "user", index: true },
+function normalizePermissions(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const out = [];
+  const seen = new Set();
 
-    /**
-     * ✅ Enterprise RBAC
-     */
-    permissions: { type: [String], default: [], index: true },
-    roleLevel: { type: Number, default: 0, index: true },
-
-    isBlocked: { type: Boolean, default: false, index: true },
-    lastLoginAt: { type: Date, default: null },
-  },
-  { timestamps: true }
-);
-
-/**
- * ✅ Mongoose v9 compatible middleware
- * - এখানে আর "next()" ব্যবহার করবো না
- * - sync middleware: return/throw-based
- */
-UserSchema.pre("save", function () {
-  // roleLevel auto-sync based on role (only when missing OR role changed)
-  if (this.roleLevel == null || this.isModified("role")) {
-    this.roleLevel = this.role === "admin" ? 100 : 0;
+  for (const raw of arr) {
+    const p = String(raw || "").trim();
+    if (!p) continue;
+    const k = p.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(p);
   }
 
-  // normalize permissions
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+function getDefaultRoleLevel(role) {
+  const r = String(role || "").trim().toLowerCase();
+
+  if (r === "superadmin") return 100;
+  if (r === "admin") return 50;
+  if (r === "manager") return 40;
+  if (r === "support") return 30;
+  if (r === "editor") return 20;
+  if (r === "auditor") return 10;
+  return 0;
+}
+
+const UserSchema = new mongoose.Schema(
+  {
+    firebaseUid: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+      trim: true,
+    },
+
+    email: {
+      type: String,
+      default: null,
+      index: true,
+      lowercase: true,
+      trim: true,
+    },
+
+    phone: {
+      type: String,
+      default: null,
+      index: true,
+      trim: true,
+    },
+
+    displayName: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    photoURL: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    role: {
+      type: String,
+      enum: USER_ROLES,
+      default: "user",
+      index: true,
+      trim: true,
+    },
+
+    permissions: {
+      type: [String],
+      default: [],
+      index: true,
+    },
+
+    roleLevel: {
+      type: Number,
+      default: 0,
+      index: true,
+      min: 0,
+      max: 100,
+    },
+
+    isBlocked: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    lastLoginAt: {
+      type: Date,
+      default: null,
+    },
+
+    rbacUpdatedAt: {
+      type: Date,
+      default: null,
+    },
+
+    rbacUpdatedBy: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    blockedAt: {
+      type: Date,
+      default: null,
+    },
+
+    blockedBy: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+  },
+  {
+    timestamps: true,
+    versionKey: false,
+  }
+);
+
+UserSchema.pre("save", function () {
+  if (typeof this.firebaseUid === "string") {
+    this.firebaseUid = this.firebaseUid.trim();
+  }
+
+  if (typeof this.email === "string") {
+    this.email = this.email.trim().toLowerCase() || null;
+  }
+
+  if (typeof this.phone === "string") {
+    this.phone = this.phone.trim() || null;
+  }
+
+  if (typeof this.displayName === "string") {
+    this.displayName = this.displayName.trim() || null;
+  }
+
+  if (typeof this.photoURL === "string") {
+    this.photoURL = this.photoURL.trim() || null;
+  }
+
+  if (typeof this.role === "string") {
+    this.role = this.role.trim().toLowerCase();
+  }
+
+  if (!USER_ROLES.includes(this.role)) {
+    this.role = "user";
+  }
+
+  if (
+    this.roleLevel == null ||
+    !Number.isFinite(Number(this.roleLevel)) ||
+    Number(this.roleLevel) < 0
+  ) {
+    this.roleLevel = getDefaultRoleLevel(this.role);
+  } else {
+    this.roleLevel = Math.max(0, Math.min(100, Number(this.roleLevel)));
+  }
+
   if (Array.isArray(this.permissions)) {
-    this.permissions = Array.from(
-      new Set(
-        this.permissions
-          .map((p) => String(p || "").trim())
-          .filter(Boolean)
-      )
-    ).sort();
+    this.permissions = normalizePermissions(this.permissions);
+  } else {
+    this.permissions = [];
+  }
+
+  if (typeof this.rbacUpdatedBy === "string") {
+    this.rbacUpdatedBy = this.rbacUpdatedBy.trim() || null;
+  }
+
+  if (typeof this.blockedBy === "string") {
+    this.blockedBy = this.blockedBy.trim() || null;
+  }
+
+  if (!this.isBlocked) {
+    this.blockedAt = null;
+    this.blockedBy = null;
   }
 });
 

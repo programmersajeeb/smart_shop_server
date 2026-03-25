@@ -1,8 +1,15 @@
 require("dotenv").config();
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ UncaughtException:", err);
+  process.exit(1);
+});
+
 const app = require("./app");
 const connectDB = require("./config/db");
 
 const PORT = Number(process.env.PORT || 5000);
+let server;
 
 function requireEnv(keys) {
   const missing = keys.filter((k) => !String(process.env[k] || "").trim());
@@ -13,7 +20,6 @@ function requireEnv(keys) {
   }
 }
 
-// ✅ Required for core auth + db
 requireEnv([
   "MONGO_URI",
   "CORS_ORIGIN",
@@ -26,26 +32,25 @@ requireEnv([
 
 process.on("unhandledRejection", (err) => {
   console.error("❌ UnhandledRejection:", err);
-  process.exit(1);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("❌ UncaughtException:", err);
-  process.exit(1);
+  if (server) {
+    server.close(() => process.exit(1));
+  } else {
+    process.exit(1);
+  }
 });
 
 (async () => {
   try {
     await connectDB(process.env.MONGO_URI);
 
-    const server = app.listen(PORT, () => {
+    server = app.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
 
     const shutdown = (signal) => {
       console.log(`\n🛑 ${signal} received. Shutting down gracefully...`);
       server.close(() => process.exit(0));
-      setTimeout(() => process.exit(1), 10_000).unref();
+      setTimeout(() => process.exit(1), 10000).unref();
     };
 
     process.on("SIGINT", () => shutdown("SIGINT"));

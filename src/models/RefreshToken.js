@@ -1,21 +1,61 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const RefreshTokenSchema = new mongoose.Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    tokenHash: { type: String, required: true, unique: true, index: true },
-    expiresAt: { type: Date, required: true },
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
 
-    revokedAt: { type: Date, default: null },
-    replacedByTokenHash: { type: String, default: null },
+    tokenHash: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
 
-    userAgent: { type: String, default: null },
-    ip: { type: String, default: null },
+    expiresAt: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+
+    revokedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+
+    replacedByTokenHash: {
+      type: String,
+      default: null,
+    },
+
+    userAgent: {
+      type: String,
+      default: null,
+    },
+
+    ip: {
+      type: String,
+      default: null,
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    versionKey: false,
+  }
 );
 
-// Auto-clean expired refresh tokens
+// ✅ Auto-clean expired refresh tokens (TTL index)
 RefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-module.exports = mongoose.model('RefreshToken', RefreshTokenSchema);
+// ✅ Optional: prevent duplicate active tokens (extra safety)
+RefreshTokenSchema.index(
+  { user: 1, tokenHash: 1 },
+  { unique: true }
+);
+
+module.exports = mongoose.model("RefreshToken", RefreshTokenSchema);
