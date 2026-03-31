@@ -101,13 +101,6 @@ function applyPermissionDependencies(list) {
   return normalizePermissions(Array.from(next));
 }
 
-function isSuperAdminLike(role, roleLevel, permissions) {
-  const r = String(role || "").trim().toLowerCase();
-  const lvl = Number(roleLevel || 0);
-  const perms = normalizePermissions(permissions);
-  return r === "superadmin" || lvl >= 100 || perms.includes("*");
-}
-
 function shouldHaveAdminShell(role, roleLevel, permissions) {
   const nextRole = String(role || "").trim().toLowerCase();
   const nextLevel = Number(roleLevel || 0);
@@ -188,6 +181,29 @@ function getTargetRoleLevel(user) {
   return Number(user?.roleLevel || 0);
 }
 
+function isDeletedUser(user) {
+  return Boolean(user?.isDeleted);
+}
+
+function assertNotSelfAction(req, targetId, actionLabel = "manage this account") {
+  if (isSameUser(req, targetId)) {
+    throw new ApiError(
+      403,
+      `You cannot ${actionLabel} for your own account. Ask another authorized administrator to review this access.`
+    );
+  }
+}
+
+function assertTargetExistsAndActive(user) {
+  if (!user) {
+    throw new ApiError(404, "User not found");
+  }
+
+  if (isDeletedUser(user)) {
+    throw new ApiError(410, "This user account has already been deleted");
+  }
+}
+
 function canManageTarget(req, targetUser) {
   const actorId = String(req.user?.sub || "");
   const actorRole = getActorRole(req);
@@ -198,7 +214,8 @@ function canManageTarget(req, targetUser) {
   const targetLevel = getTargetRoleLevel(targetUser);
 
   if (!actorId || !targetId) return false;
-  if (actorId === targetId) return true;
+  if (actorId === targetId) return false;
+  if (isDeletedUser(targetUser)) return false;
 
   const actorIsSuper = actorRole === "superadmin" || actorLevel >= 100;
   const targetIsSuper = targetRole === "superadmin" || targetLevel >= 100;
@@ -206,6 +223,15 @@ function canManageTarget(req, targetUser) {
   if (!actorIsSuper && targetIsSuper) return false;
 
   return actorLevel > targetLevel;
+}
+
+function assertCanManageTarget(req, targetUser) {
+  assertTargetExistsAndActive(targetUser);
+  assertNotSelfAction(req, targetUser?._id, "change access settings");
+
+  if (!canManageTarget(req, targetUser)) {
+    throw new ApiError(403, "You cannot manage a user with equal or higher role level");
+  }
 }
 
 function assertAssignableRole(req, nextRole, nextRoleLevel) {
@@ -229,6 +255,7 @@ async function countSuperAdmins(excludeUserId) {
     role: "superadmin",
     roleLevel: { $gte: 100 },
     isBlocked: false,
+    $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }],
   };
 
   if (excludeUserId) {
@@ -243,25 +270,33 @@ async function ensureNotRemovingLastSuperAdmin({
   nextRole,
   nextRoleLevel,
   nextBlocked,
+  nextDeleted,
 }) {
   const isCurrentSuper =
     String(currentUser?.role || "").trim().toLowerCase() === "superadmin" &&
-    Number(currentUser?.roleLevel || 0) >= 100;
+    Number(currentUser?.roleLevel || 0) >= 100 &&
+    !Boolean(currentUser?.isDeleted);
 
   if (!isCurrentSuper) return;
 
   const remainsSuper =
     String(nextRole || currentUser.role).trim().toLowerCase() === "superadmin" &&
-    Number(nextRoleLevel) >= 100;
+    Number(nextRoleLevel ?? currentUser.roleLevel) >= 100;
 
   const remainsUnblocked =
     nextBlocked === undefined ? !Boolean(currentUser?.isBlocked) : !Boolean(nextBlocked);
 
-  if (remainsSuper && remainsUnblocked) return;
+  const remainsUndeleted =
+    nextDeleted === undefined ? !Boolean(currentUser?.isDeleted) : !Boolean(nextDeleted);
+
+  if (remainsSuper && remainsUnblocked && remainsUndeleted) return;
 
   const others = await countSuperAdmins(currentUser._id);
   if (others <= 0) {
-    throw new ApiError(400, "You cannot remove or block the last active super admin");
+    throw new ApiError(
+      400,
+      "You cannot remove, block, or delete the last active super admin"
+    );
   }
 }
 
@@ -279,6 +314,21 @@ function setBlockFields(user, req, nextBlocked) {
   } else {
     user.blockedAt = null;
     user.blockedBy = null;
+  }
+}
+
+function setDeleteFields(user, req, nextDeleted) {
+  user.isDeleted = Boolean(nextDeleted);
+
+  if (user.isDeleted) {
+    user.deletedAt = new Date();
+    user.deletedBy = String(req.user?.sub || "") || null;
+    user.isBlocked = true;
+    user.blockedAt = user.blockedAt || new Date();
+    user.blockedBy = user.blockedBy || String(req.user?.sub || "") || null;
+  } else {
+    user.deletedAt = null;
+    user.deletedBy = null;
   }
 }
 
@@ -328,7 +378,10 @@ exports.adminList = async (req, res, next) => {
     const sortDir =
       String(req.query.sortDir || "desc").trim().toLowerCase() === "asc" ? 1 : -1;
 
-    const filter = {};
+    const filter = {
+      $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }],
+    };
+
     if (role) filter.role = role;
 
     if (blocked !== undefined && blocked !== "") {
@@ -338,6 +391,7 @@ exports.adminList = async (req, res, next) => {
     if (q) {
       const r = new RegExp(escapeRegex(q), "i");
       filter.$or = [{ email: r }, { phone: r }, { displayName: r }, { firebaseUid: r }];
+      filter.$and = [{ $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }] }];
     }
 
     const sortMap = {
@@ -354,7 +408,7 @@ exports.adminList = async (req, res, next) => {
     const [items, total] = await Promise.all([
       User.find(filter)
         .select(
-          "firebaseUid email phone displayName photoURL role roleLevel permissions isBlocked lastLoginAt createdAt updatedAt rbacUpdatedAt rbacUpdatedBy blockedAt blockedBy"
+          "firebaseUid email phone displayName photoURL role roleLevel permissions isBlocked isDeleted lastLoginAt createdAt updatedAt rbacUpdatedAt rbacUpdatedBy blockedAt blockedBy deletedAt deletedBy"
         )
         .sort(mongoSort)
         .skip(skip)
@@ -382,15 +436,10 @@ exports.adminUpdateRole = async (req, res, next) => {
     const targetId = String(req.params.id || "");
     if (!targetId) throw new ApiError(400, "Invalid user id");
 
-    const actorIsSelf = isSameUser(req, targetId);
     const actorLevel = getActorRoleLevel(req);
 
     const user = await User.findById(targetId);
-    if (!user) throw new ApiError(404, "User not found");
-
-    if (!canManageTarget(req, user) && !actorIsSelf) {
-      throw new ApiError(403, "You cannot manage a user with equal or higher role level");
-    }
+    assertCanManageTarget(req, user);
 
     const before = {
       role: user.role,
@@ -410,22 +459,14 @@ exports.adminUpdateRole = async (req, res, next) => {
       nextLevel = n;
     }
 
-    if (actorIsSelf) {
-      if (nextRole === "user") {
-        throw new ApiError(400, "You cannot demote yourself");
-      }
-      if (nextLevel < actorLevel) {
-        throw new ApiError(400, "You cannot reduce your own role level");
-      }
-    } else {
-      assertAssignableRole(req, nextRole, nextLevel);
-    }
+    assertAssignableRole(req, nextRole, nextLevel);
 
     await ensureNotRemovingLastSuperAdmin({
       currentUser: user,
       nextRole,
       nextRoleLevel: nextLevel,
       nextBlocked: user.isBlocked,
+      nextDeleted: user.isDeleted,
     });
 
     user.role = nextRole;
@@ -473,14 +514,8 @@ exports.adminUpdatePermissions = async (req, res, next) => {
     const targetId = String(req.params.id || "");
     if (!targetId) throw new ApiError(400, "Invalid user id");
 
-    const actorIsSelf = isSameUser(req, targetId);
-
     const user = await User.findById(targetId);
-    if (!user) throw new ApiError(404, "User not found");
-
-    if (!canManageTarget(req, user) && !actorIsSelf) {
-      throw new ApiError(403, "You cannot manage a user with equal or higher role level");
-    }
+    assertCanManageTarget(req, user);
 
     const cleaned = cleanAndValidatePermissions(
       Array.isArray(req.body?.permissions) ? req.body.permissions : [],
@@ -490,14 +525,6 @@ exports.adminUpdatePermissions = async (req, res, next) => {
         roleLevel: user.roleLevel,
       }
     );
-
-    if (
-      actorIsSelf &&
-      shouldHaveAdminShell(user.role, user.roleLevel, cleaned) &&
-      !cleaned.includes("admin:access")
-    ) {
-      throw new ApiError(400, "You cannot remove your own admin:access permission");
-    }
 
     const before = {
       permissions: Array.isArray(user.permissions) ? user.permissions : [],
@@ -537,13 +564,9 @@ exports.adminBlock = async (req, res, next) => {
     const targetId = String(req.params.id || "");
     if (!targetId) throw new ApiError(400, "Invalid user id");
 
-    if (isSameUser(req, targetId)) {
-      throw new ApiError(400, "You cannot block yourself");
-    }
-
     const user = await User.findById(targetId);
-    if (!user) throw new ApiError(404, "User not found");
-
+    assertTargetExistsAndActive(user);
+    assertNotSelfAction(req, targetId, "change the access status");
     if (!canManageTarget(req, user)) {
       throw new ApiError(403, "You cannot manage a user with equal or higher role level");
     }
@@ -555,6 +578,7 @@ exports.adminBlock = async (req, res, next) => {
       nextRole: user.role,
       nextRoleLevel: user.roleLevel,
       nextBlocked,
+      nextDeleted: user.isDeleted,
     });
 
     const before = {
@@ -596,25 +620,23 @@ exports.adminUpdateRbac = async (req, res, next) => {
     const targetId = String(req.params.id || "");
     if (!targetId) throw new ApiError(400, "Invalid user id");
 
-    const actorIsSelf = isSameUser(req, targetId);
     const actorLevel = getActorRoleLevel(req);
 
     const user = await User.findById(targetId);
-    if (!user) throw new ApiError(404, "User not found");
-
-    if (!canManageTarget(req, user) && !actorIsSelf) {
-      throw new ApiError(403, "You cannot manage a user with equal or higher role level");
-    }
+    assertCanManageTarget(req, user);
 
     const before = {
       role: user.role,
       roleLevel: user.roleLevel,
       permissions: Array.isArray(user.permissions) ? user.permissions : [],
       isBlocked: Boolean(user.isBlocked),
+      isDeleted: Boolean(user.isDeleted),
       rbacUpdatedAt: user.rbacUpdatedAt || null,
       rbacUpdatedBy: user.rbacUpdatedBy || null,
       blockedAt: user.blockedAt || null,
       blockedBy: user.blockedBy || null,
+      deletedAt: user.deletedAt || null,
+      deletedBy: user.deletedBy || null,
     };
 
     const nextRole =
@@ -644,27 +666,14 @@ exports.adminUpdateRbac = async (req, res, next) => {
             roleLevel: nextRoleLevel,
           });
 
-    if (actorIsSelf) {
-      if (nextRole === "user") throw new ApiError(400, "You cannot demote yourself");
-      if (nextBlocked) throw new ApiError(400, "You cannot block yourself");
-      if (nextRoleLevel < actorLevel) {
-        throw new ApiError(400, "You cannot reduce your own role level");
-      }
-      if (
-        shouldHaveAdminShell(nextRole, nextRoleLevel, nextPermissions) &&
-        !nextPermissions.includes("admin:access")
-      ) {
-        throw new ApiError(400, "You cannot remove your own admin:access permission");
-      }
-    } else {
-      assertAssignableRole(req, nextRole, nextRoleLevel);
-    }
+    assertAssignableRole(req, nextRole, nextRoleLevel);
 
     await ensureNotRemovingLastSuperAdmin({
       currentUser: user,
       nextRole,
       nextRoleLevel,
       nextBlocked,
+      nextDeleted: user.isDeleted,
     });
 
     user.role = nextRole;
@@ -680,10 +689,13 @@ exports.adminUpdateRbac = async (req, res, next) => {
       roleLevel: user.roleLevel,
       permissions: user.permissions,
       isBlocked: Boolean(user.isBlocked),
+      isDeleted: Boolean(user.isDeleted),
       rbacUpdatedAt: user.rbacUpdatedAt || null,
       rbacUpdatedBy: user.rbacUpdatedBy || null,
       blockedAt: user.blockedAt || null,
       blockedBy: user.blockedBy || null,
+      deletedAt: user.deletedAt || null,
+      deletedBy: user.deletedBy || null,
     };
 
     await writeAudit(req, {
@@ -703,11 +715,82 @@ exports.adminUpdateRbac = async (req, res, next) => {
         roleLevel: user.roleLevel,
         permissions: user.permissions,
         isBlocked: user.isBlocked,
+        isDeleted: user.isDeleted,
         rbacUpdatedAt: user.rbacUpdatedAt,
         rbacUpdatedBy: user.rbacUpdatedBy,
         blockedAt: user.blockedAt,
         blockedBy: user.blockedBy,
+        deletedAt: user.deletedAt,
+        deletedBy: user.deletedBy,
       },
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// DELETE /users/admin/:id
+exports.adminDeleteUser = async (req, res, next) => {
+  try {
+    const targetId = String(req.params.id || "");
+    if (!targetId) throw new ApiError(400, "Invalid user id");
+
+    const user = await User.findById(targetId);
+    assertTargetExistsAndActive(user);
+    assertNotSelfAction(req, targetId, "delete access");
+    if (!canManageTarget(req, user)) {
+      throw new ApiError(403, "You cannot manage a user with equal or higher role level");
+    }
+
+    await ensureNotRemovingLastSuperAdmin({
+      currentUser: user,
+      nextRole: user.role,
+      nextRoleLevel: user.roleLevel,
+      nextBlocked: true,
+      nextDeleted: true,
+    });
+
+    const before = {
+      role: user.role,
+      roleLevel: user.roleLevel,
+      permissions: Array.isArray(user.permissions) ? user.permissions : [],
+      isBlocked: Boolean(user.isBlocked),
+      isDeleted: Boolean(user.isDeleted),
+      blockedAt: user.blockedAt || null,
+      blockedBy: user.blockedBy || null,
+      deletedAt: user.deletedAt || null,
+      deletedBy: user.deletedBy || null,
+    };
+
+    setDeleteFields(user, req, true);
+    setRbacAuditFields(user, req);
+    await user.save();
+
+    const after = {
+      role: user.role,
+      roleLevel: user.roleLevel,
+      permissions: Array.isArray(user.permissions) ? user.permissions : [],
+      isBlocked: Boolean(user.isBlocked),
+      isDeleted: Boolean(user.isDeleted),
+      blockedAt: user.blockedAt || null,
+      blockedBy: user.blockedBy || null,
+      deletedAt: user.deletedAt || null,
+      deletedBy: user.deletedBy || null,
+    };
+
+    await writeAudit(req, {
+      action: "user.delete",
+      entity: "user",
+      entityId: user._id,
+      before,
+      after,
+      note: "User account soft-deleted from admin console",
+    });
+
+    res.json({
+      ok: true,
+      deletedUserId: String(user._id),
+      message: "User account deleted successfully",
     });
   } catch (e) {
     next(e);
@@ -727,7 +810,10 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
     if (!action) throw new ApiError(400, "Action is required");
     if (!userIds.length) throw new ApiError(400, "No users selected");
 
-    const users = await User.find({ _id: { $in: userIds } });
+    const users = await User.find({
+      _id: { $in: userIds },
+      $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }],
+    });
     const byId = new Map(users.map((u) => [String(u._id), u]));
 
     const results = {
@@ -743,15 +829,12 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
       const user = byId.get(String(id));
       if (!user) {
         results.failedCount += 1;
-        results.failed.push({ id, message: "User not found" });
+        results.failed.push({ id, message: "User not found or already deleted" });
         continue;
       }
 
       try {
-        if (isSameUser(req, id)) {
-          throw new ApiError(400, "You cannot run bulk action on yourself");
-        }
-
+        assertNotSelfAction(req, id, "apply bulk access changes");
         if (!canManageTarget(req, user)) {
           throw new ApiError(403, "You cannot manage a user with equal or higher role level");
         }
@@ -761,10 +844,13 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
           roleLevel: user.roleLevel,
           permissions: Array.isArray(user.permissions) ? user.permissions : [],
           isBlocked: Boolean(user.isBlocked),
+          isDeleted: Boolean(user.isDeleted),
           rbacUpdatedAt: user.rbacUpdatedAt || null,
           rbacUpdatedBy: user.rbacUpdatedBy || null,
           blockedAt: user.blockedAt || null,
           blockedBy: user.blockedBy || null,
+          deletedAt: user.deletedAt || null,
+          deletedBy: user.deletedBy || null,
         };
 
         if (action === "block") {
@@ -773,6 +859,7 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
             nextRole: user.role,
             nextRoleLevel: user.roleLevel,
             nextBlocked: true,
+            nextDeleted: user.isDeleted,
           });
           setBlockFields(user, req, true);
         } else if (action === "unblock") {
@@ -793,6 +880,7 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
             nextRole: "user",
             nextRoleLevel: 0,
             nextBlocked: user.isBlocked,
+            nextDeleted: user.isDeleted,
           });
           user.role = "user";
           user.roleLevel = 0;
@@ -848,6 +936,7 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
             nextRole,
             nextRoleLevel,
             nextBlocked,
+            nextDeleted: user.isDeleted,
           });
 
           user.role = nextRole;
@@ -866,10 +955,13 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
           roleLevel: user.roleLevel,
           permissions: user.permissions,
           isBlocked: Boolean(user.isBlocked),
+          isDeleted: Boolean(user.isDeleted),
           rbacUpdatedAt: user.rbacUpdatedAt || null,
           rbacUpdatedBy: user.rbacUpdatedBy || null,
           blockedAt: user.blockedAt || null,
           blockedBy: user.blockedBy || null,
+          deletedAt: user.deletedAt || null,
+          deletedBy: user.deletedBy || null,
         };
 
         await writeAudit(req, {
@@ -888,10 +980,13 @@ exports.adminBulkUpdateRbac = async (req, res, next) => {
           roleLevel: user.roleLevel,
           permissions: user.permissions,
           isBlocked: user.isBlocked,
+          isDeleted: user.isDeleted,
           rbacUpdatedAt: user.rbacUpdatedAt,
           rbacUpdatedBy: user.rbacUpdatedBy,
           blockedAt: user.blockedAt,
           blockedBy: user.blockedBy,
+          deletedAt: user.deletedAt,
+          deletedBy: user.deletedBy,
         });
       } catch (err) {
         results.failedCount += 1;

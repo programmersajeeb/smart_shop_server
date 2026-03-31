@@ -73,6 +73,17 @@ router.patch(
   c.adminUpdateRbac
 );
 
+router.delete(
+  "/admin/:id",
+  auth,
+  requireRole({
+    mode: "any",
+    minLevel: 100,
+    anyPermissions: ["users:write"],
+  }),
+  c.adminDeleteUser
+);
+
 router.patch(
   "/admin/bulk-rbac",
   auth,

@@ -104,6 +104,12 @@ const UserSchema = new mongoose.Schema(
       index: true,
     },
 
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
     lastLoginAt: {
       type: Date,
       default: null,
@@ -126,6 +132,17 @@ const UserSchema = new mongoose.Schema(
     },
 
     blockedBy: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+
+    deletedBy: {
       type: String,
       default: null,
       trim: true,
@@ -190,9 +207,18 @@ UserSchema.pre("save", function () {
     this.blockedBy = this.blockedBy.trim() || null;
   }
 
+  if (typeof this.deletedBy === "string") {
+    this.deletedBy = this.deletedBy.trim() || null;
+  }
+
   if (!this.isBlocked) {
     this.blockedAt = null;
     this.blockedBy = null;
+  }
+
+  if (!this.isDeleted) {
+    this.deletedAt = null;
+    this.deletedBy = null;
   }
 });
 
