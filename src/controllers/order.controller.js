@@ -5,16 +5,9 @@ const Cart = require("../models/Cart");
 const Product = require("../models/Product");
 const Order = require("../models/Order");
 const User = require("../models/User");
+const Promotion = require("../models/Promotion");
 const AdminAuditLog = require("../models/AdminAuditLog");
-const PageConfig = require("../models/PageConfig"); // ✅ NEW
-
-function calcTotals(items) {
-  const subtotal = items.reduce((sum, it) => sum + it.price * it.qty, 0);
-  const shipping = 0;
-  const discount = 0;
-  const total = subtotal + shipping - discount;
-  return { subtotal, shipping, discount, total };
-}
+const PageConfig = require("../models/PageConfig");
 
 function escapeRegex(str) {
   return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -38,7 +31,6 @@ function toEndOfDayUTC(d) {
   return x;
 }
 
-// Admin status transition rules (enterprise-safe)
 function canTransition(from, to) {
   if (from === to) return true;
 
@@ -55,7 +47,6 @@ function canTransition(from, to) {
   return allowed.includes(to);
 }
 
-// ✅ Enterprise: cache commerce settings (reduce DB hits)
 let _settingsCache = { exp: 0, data: null };
 async function getCommerceSettings() {
   const now = Date.now();
@@ -69,18 +60,17 @@ async function getCommerceSettings() {
     allowBackorders = Boolean(doc?.data?.commerce?.allowBackorders);
     allowGuestCheckout = Boolean(doc?.data?.commerce?.allowGuestCheckout);
   } catch {
-    // ignore -> defaults false
+    // ignore
   }
 
   const out = { allowBackorders, allowGuestCheckout };
-  _settingsCache = { data: out, exp: now + 30_000 }; // 30s TTL
+  _settingsCache = { data: out, exp: now + 30_000 };
   return out;
 }
 
 function normalizePhone(v) {
   const s = String(v || "").trim();
   if (!s) return "";
-  // keep digits only
   return s.replace(/[^\d]/g, "");
 }
 
@@ -92,9 +82,262 @@ function normalizeText(v, maxLen) {
 
 function normalizePaymentMethod(v) {
   const s = String(v || "").trim().toLowerCase();
-  // enterprise-safe: whitelist (extend later)
   const allowed = ["cod", "bkash", "nagad", "card", "sslcommerz"];
   return allowed.includes(s) ? s : "cod";
+}
+
+function normalizeCode(value) {
+  const s = String(value || "").trim().toUpperCase();
+  return s || null;
+}
+
+function getPromotionComputedStatus(promotion, now = new Date()) {
+  if (!promotion?.isActive) return "inactive";
+
+  const startAt = promotion?.startAt ? new Date(promotion.startAt) : null;
+  const endAt = promotion?.endAt ? new Date(promotion.endAt) : null;
+
+  if (startAt && startAt > now) return "scheduled";
+  if (endAt && endAt < now) return "expired";
+
+  return "active";
+}
+
+function buildShippingAddress(inAddr = {}) {
+  return {
+    name: normalizeText(inAddr?.name, 80),
+    phone: normalizeText(inAddr?.phone, 40),
+    addressLine: normalizeText(inAddr?.addressLine, 200),
+    city: normalizeText(inAddr?.city, 80),
+    country: normalizeText(inAddr?.country, 80),
+    postalCode: normalizeText(inAddr?.postalCode, 20),
+    note: normalizeText(inAddr?.note, 300),
+    paymentMethod: normalizePaymentMethod(inAddr?.paymentMethod),
+  };
+}
+
+function calcBaseTotals(items) {
+  const subtotal = items.reduce((sum, it) => sum + it.price * it.qty, 0);
+  const shipping = 0;
+  return { subtotal, shipping };
+}
+
+async function validatePromotionForOrder({
+  code,
+  subtotal,
+  productDocs,
+  userId = null,
+  phone = null,
+  session = null,
+}) {
+  const normalizedCode = normalizeCode(code);
+  if (!normalizedCode) {
+    return {
+      promotion: null,
+      discount: 0,
+      shipping: 0,
+      appliedPromotion: null,
+    };
+  }
+
+  const promotion = await Promotion.findOne({
+    type: "coupon",
+    code: normalizedCode,
+  }).session(session);
+
+  if (!promotion) throw new ApiError(404, "Coupon not found");
+
+  const status = getPromotionComputedStatus(promotion);
+  if (status !== "active") {
+    throw new ApiError(400, `Coupon is ${status}`);
+  }
+
+  if (
+    promotion.usageLimit != null &&
+    Number(promotion?.usage?.totalUsed || 0) >= promotion.usageLimit
+  ) {
+    throw new ApiError(400, "Coupon usage limit reached");
+  }
+
+  if (Number(promotion.minOrderAmount || 0) > subtotal) {
+    throw new ApiError(
+      400,
+      `Minimum order amount is ${promotion.minOrderAmount}`
+    );
+  }
+
+  if (promotion.usageLimitPerUser != null) {
+    const usageRow = Array.isArray(promotion?.usage?.users)
+      ? promotion.usage.users.find((item) => {
+          if (userId && item?.userId && String(item.userId) === String(userId)) return true;
+          if (phone && item?.phone && String(item.phone) === String(phone)) return true;
+          return false;
+        })
+      : null;
+
+    if (usageRow && Number(usageRow.usedCount || 0) >= promotion.usageLimitPerUser) {
+      throw new ApiError(400, "Per-user coupon usage limit reached");
+    }
+  }
+
+  if (promotion.appliesTo === "specific_products") {
+    const targetIds = new Set(
+      (promotion?.target?.productIds || []).map((id) => String(id))
+    );
+    const matched = productDocs.some((p) => targetIds.has(String(p._id)));
+    if (!matched) {
+      throw new ApiError(400, "Coupon does not apply to the selected products");
+    }
+  }
+
+  if (promotion.appliesTo === "categories") {
+    const allowed = new Set(
+      (promotion?.target?.categories || []).map((x) => String(x).toLowerCase())
+    );
+    const matched = productDocs.some((p) =>
+      allowed.has(String(p?.category || "").toLowerCase())
+    );
+    if (!matched) {
+      throw new ApiError(400, "Coupon does not apply to selected categories");
+    }
+  }
+
+  if (promotion.appliesTo === "brands") {
+    const allowed = new Set(
+      (promotion?.target?.brands || []).map((x) => String(x).toLowerCase())
+    );
+    const matched = productDocs.some((p) =>
+      allowed.has(String(p?.brand || "").toLowerCase())
+    );
+    if (!matched) {
+      throw new ApiError(400, "Coupon does not apply to selected brands");
+    }
+  }
+
+  let discount = 0;
+  let shipping = 0;
+
+  if (promotion.discountType === "percentage") {
+    discount = (subtotal * Number(promotion.value || 0)) / 100;
+    if (promotion.maxDiscountAmount != null) {
+      discount = Math.min(discount, Number(promotion.maxDiscountAmount || 0));
+    }
+  } else if (promotion.discountType === "fixed") {
+    discount = Math.min(subtotal, Number(promotion.value || 0));
+  } else if (promotion.discountType === "free_shipping") {
+    shipping = 0;
+    discount = 0;
+  }
+
+  return {
+    promotion,
+    discount: Math.max(0, Math.round(discount)),
+    shipping,
+    appliedPromotion: {
+      promotionId: promotion._id,
+      code: promotion.code || null,
+      name: promotion.name,
+      type: promotion.type,
+      discountType: promotion.discountType,
+      value: Number(promotion.value || 0),
+    },
+  };
+}
+
+async function incrementPromotionUsage({ promotion, userId = null, phone = null, session = null }) {
+  if (!promotion) return;
+
+  promotion.usage = promotion.usage || { totalUsed: 0, users: [] };
+  promotion.usage.totalUsed = Math.max(0, Number(promotion.usage.totalUsed || 0)) + 1;
+
+  const users = Array.isArray(promotion.usage.users) ? promotion.usage.users : [];
+  const normalizedPhone = normalizePhone(phone);
+
+  let row = users.find((item) => {
+    if (userId && item?.userId && String(item.userId) === String(userId)) return true;
+    if (normalizedPhone && item?.phone && normalizePhone(item.phone) === normalizedPhone) return true;
+    return false;
+  });
+
+  if (!row) {
+    row = {
+      userId: userId || null,
+      phone: normalizedPhone || null,
+      usedCount: 0,
+    };
+    users.push(row);
+  }
+
+  row.usedCount = Math.max(0, Number(row.usedCount || 0)) + 1;
+  promotion.usage.users = users;
+
+  await promotion.save({ session });
+}
+
+async function buildOrderItemsFromCart(cartItems, allowBackorders, session) {
+  const orderItems = [];
+  const productDocs = [];
+
+  for (const it of cartItems) {
+    const product = await Product.findById(it.product).session(session);
+    if (!product || product.isActive === false) {
+      throw new ApiError(400, `Product unavailable: ${it.product}`);
+    }
+
+    if (!allowBackorders && product.stock < it.qty) {
+      throw new ApiError(400, `Insufficient stock: ${product.title}`);
+    }
+
+    if (allowBackorders) product.stock = Math.max(0, product.stock - it.qty);
+    else product.stock = product.stock - it.qty;
+
+    await product.save({ session });
+
+    productDocs.push(product);
+
+    orderItems.push({
+      product: product._id,
+      qty: it.qty,
+      price: product.price,
+      title: product.title,
+      image: product.images?.[0] || null,
+    });
+  }
+
+  return { orderItems, productDocs };
+}
+
+async function buildOrderItemsFromGuestLines(lines, allowBackorders, session) {
+  const orderItems = [];
+  const productDocs = [];
+
+  for (const it of lines) {
+    const product = await Product.findById(it.productId).session(session);
+    if (!product || product.isActive === false) {
+      throw new ApiError(400, `Product unavailable: ${it.productId}`);
+    }
+
+    if (!allowBackorders && product.stock < it.qty) {
+      throw new ApiError(400, `Insufficient stock: ${product.title}`);
+    }
+
+    if (allowBackorders) product.stock = Math.max(0, product.stock - it.qty);
+    else product.stock = product.stock - it.qty;
+
+    await product.save({ session });
+
+    productDocs.push(product);
+
+    orderItems.push({
+      product: product._id,
+      qty: it.qty,
+      price: product.price,
+      title: product.title,
+      image: product.images?.[0] || null,
+    });
+  }
+
+  return { orderItems, productDocs };
 }
 
 // POST /orders/checkout (auth)
@@ -111,44 +354,29 @@ exports.checkout = async (req, res, next) => {
     const cart = await Cart.findOne({ user: userId }).session(session);
     if (!cart || cart.items.length === 0) throw new ApiError(400, "Cart is empty");
 
-    const orderItems = [];
+    const { orderItems, productDocs } = await buildOrderItemsFromCart(
+      cart.items,
+      allowBackorders,
+      session
+    );
 
-    for (const it of cart.items) {
-      const product = await Product.findById(it.product).session(session);
-      if (!product || product.isActive === false) throw new ApiError(400, `Product unavailable: ${it.product}`);
+    const shippingAddress = buildShippingAddress(req.body?.shippingAddress || {});
+    const baseTotals = calcBaseTotals(orderItems);
 
-      if (!allowBackorders && product.stock < it.qty) {
-        throw new ApiError(400, `Insufficient stock: ${product.title}`);
-      }
+    const promoResult = await validatePromotionForOrder({
+      code: req.body?.couponCode,
+      subtotal: baseTotals.subtotal,
+      productDocs,
+      userId,
+      phone: shippingAddress.phone,
+      session,
+    });
 
-      // ✅ Enterprise: do not go negative if backorders allowed
-      if (allowBackorders) product.stock = Math.max(0, product.stock - it.qty);
-      else product.stock = product.stock - it.qty;
-
-      await product.save({ session });
-
-      orderItems.push({
-        product: product._id,
-        qty: it.qty,
-        price: product.price,
-        title: product.title,
-        image: product.images?.[0] || null,
-      });
-    }
-
-    const totals = calcTotals(orderItems);
-
-    // ✅ sanitize shippingAddress (keeps your behavior but safer)
-    const inAddr = req.body?.shippingAddress || {};
-    const shippingAddress = {
-      name: normalizeText(inAddr?.name, 80),
-      phone: normalizeText(inAddr?.phone, 40),
-      addressLine: normalizeText(inAddr?.addressLine, 200),
-      city: normalizeText(inAddr?.city, 80),
-      country: normalizeText(inAddr?.country, 80),
-      postalCode: normalizeText(inAddr?.postalCode, 20),
-      note: normalizeText(inAddr?.note, 300),
-      paymentMethod: normalizePaymentMethod(inAddr?.paymentMethod),
+    const totals = {
+      subtotal: baseTotals.subtotal,
+      shipping: baseTotals.shipping,
+      discount: promoResult.discount,
+      total: baseTotals.subtotal + baseTotals.shipping - promoResult.discount,
     };
 
     const order = await Order.create(
@@ -162,10 +390,20 @@ exports.checkout = async (req, res, next) => {
           total: totals.total,
           status: "pending",
           shippingAddress,
+          appliedPromotion: promoResult.appliedPromotion,
         },
       ],
       { session }
     );
+
+    if (promoResult.promotion) {
+      await incrementPromotionUsage({
+        promotion: promoResult.promotion,
+        userId,
+        phone: shippingAddress.phone,
+        session,
+      });
+    }
 
     cart.items = [];
     await cart.save({ session });
@@ -180,7 +418,7 @@ exports.checkout = async (req, res, next) => {
   }
 };
 
-// ✅ POST /orders/checkout/guest
+// POST /orders/checkout/guest
 exports.guestCheckout = async (req, res, next) => {
   const session = await mongoose.startSession();
 
@@ -188,19 +426,19 @@ exports.guestCheckout = async (req, res, next) => {
     session.startTransaction();
 
     const commerce = await getCommerceSettings();
-    if (!commerce.allowGuestCheckout) throw new ApiError(403, "Guest checkout is disabled");
+    if (!commerce.allowGuestCheckout) {
+      throw new ApiError(403, "Guest checkout is disabled");
+    }
 
     const allowBackorders = Boolean(commerce.allowBackorders);
 
     const itemsIn = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!itemsIn.length) throw new ApiError(400, "Cart is empty");
 
-    // ✅ require shipping phone for guest confirmation/security
     const inAddr = req.body?.shippingAddress || {};
     const phoneNorm = normalizePhone(inAddr?.phone);
     if (!phoneNorm) throw new ApiError(400, "Phone is required");
 
-    // normalize + merge same product
     const merged = new Map();
     for (const raw of itemsIn) {
       const pid = String(raw?.product || raw?.productId || "").trim();
@@ -211,55 +449,41 @@ exports.guestCheckout = async (req, res, next) => {
       merged.set(pid, (merged.get(pid) || 0) + Math.round(qty));
     }
 
-    const lines = Array.from(merged.entries()).slice(0, 50).map(([productId, qty]) => ({
-      productId,
-      qty,
-    }));
+    const lines = Array.from(merged.entries())
+      .slice(0, 50)
+      .map(([productId, qty]) => ({ productId, qty }));
 
     if (!lines.length) throw new ApiError(400, "Invalid cart items");
 
-    const orderItems = [];
+    const { orderItems, productDocs } = await buildOrderItemsFromGuestLines(
+      lines,
+      allowBackorders,
+      session
+    );
 
-    for (const it of lines) {
-      const product = await Product.findById(it.productId).session(session);
-      if (!product || product.isActive === false) throw new ApiError(400, `Product unavailable: ${it.productId}`);
+    const shippingAddress = buildShippingAddress(inAddr);
+    const baseTotals = calcBaseTotals(orderItems);
 
-      if (!allowBackorders && product.stock < it.qty) {
-        throw new ApiError(400, `Insufficient stock: ${product.title}`);
-      }
+    const promoResult = await validatePromotionForOrder({
+      code: req.body?.couponCode,
+      subtotal: baseTotals.subtotal,
+      productDocs,
+      userId: null,
+      phone: shippingAddress.phone,
+      session,
+    });
 
-      if (allowBackorders) product.stock = Math.max(0, product.stock - it.qty);
-      else product.stock = product.stock - it.qty;
-
-      await product.save({ session });
-
-      orderItems.push({
-        product: product._id,
-        qty: it.qty,
-        price: product.price,
-        title: product.title,
-        image: product.images?.[0] || null,
-      });
-    }
-
-    const totals = calcTotals(orderItems);
-
-    // ✅ sanitize + store shippingAddress
-    const shippingAddress = {
-      name: normalizeText(inAddr?.name, 80),
-      phone: normalizeText(inAddr?.phone, 40),
-      addressLine: normalizeText(inAddr?.addressLine, 200),
-      city: normalizeText(inAddr?.city, 80),
-      country: normalizeText(inAddr?.country, 80),
-      postalCode: normalizeText(inAddr?.postalCode, 20),
-      note: normalizeText(inAddr?.note, 300),
-      paymentMethod: normalizePaymentMethod(inAddr?.paymentMethod),
+    const totals = {
+      subtotal: baseTotals.subtotal,
+      shipping: baseTotals.shipping,
+      discount: promoResult.discount,
+      total: baseTotals.subtotal + baseTotals.shipping - promoResult.discount,
     };
 
     const order = await Order.create(
       [
         {
-          user: null, // ✅ guest
+          user: null,
           items: orderItems,
           subtotal: totals.subtotal,
           shipping: totals.shipping,
@@ -267,10 +491,20 @@ exports.guestCheckout = async (req, res, next) => {
           total: totals.total,
           status: "pending",
           shippingAddress,
+          appliedPromotion: promoResult.appliedPromotion,
         },
       ],
       { session }
     );
+
+    if (promoResult.promotion) {
+      await incrementPromotionUsage({
+        promotion: promoResult.promotion,
+        userId: null,
+        phone: shippingAddress.phone,
+        session,
+      });
+    }
 
     await session.commitTransaction();
     res.status(201).json(order[0]);
@@ -282,7 +516,7 @@ exports.guestCheckout = async (req, res, next) => {
   }
 };
 
-// ✅ GET /orders/public/:id?phone=...
+// GET /orders/public/:id?phone=...
 exports.publicGetOne = async (req, res, next) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -297,7 +531,6 @@ exports.publicGetOne = async (req, res, next) => {
     const phoneOrder = normalizePhone(order?.shippingAddress?.phone);
     if (!phoneOrder || phoneOrder !== phoneQ) throw new ApiError(404, "Order not found");
 
-    // return safe subset
     res.json({
       _id: order._id,
       status: order.status,
@@ -306,6 +539,7 @@ exports.publicGetOne = async (req, res, next) => {
       shipping: order.shipping,
       discount: order.discount,
       total: order.total,
+      appliedPromotion: order.appliedPromotion || null,
       items: (order.items || []).map((it) => ({
         title: it.title,
         image: it.image || null,
@@ -355,7 +589,7 @@ exports.getOne = async (req, res, next) => {
   }
 };
 
-// Admin: list orders (server-side search + date filter)
+// Admin: list orders
 exports.adminList = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
@@ -366,7 +600,6 @@ exports.adminList = async (req, res, next) => {
 
     if (req.query.status) filter.status = req.query.status;
 
-    // Date range
     const dateFrom = parseDateInput(req.query.dateFrom);
     const dateTo = parseDateInput(req.query.dateTo);
     if (dateFrom || dateTo) {
@@ -375,16 +608,13 @@ exports.adminList = async (req, res, next) => {
       if (dateTo) filter.createdAt.$lte = toEndOfDayUTC(dateTo);
     }
 
-    // Search
     const q = String(req.query.q || "").trim();
     if (q) {
-      // exact order id
       if (/^[0-9a-fA-F]{24}$/.test(q)) {
         filter._id = new mongoose.Types.ObjectId(q);
       } else {
         const rx = new RegExp(escapeRegex(q), "i");
 
-        // find matching users
         const users = await User.find({
           $or: [{ email: rx }, { phone: rx }, { displayName: rx }],
         })
@@ -398,6 +628,8 @@ exports.adminList = async (req, res, next) => {
           { "shippingAddress.phone": rx },
           { "shippingAddress.name": rx },
           { "items.title": rx },
+          { "appliedPromotion.code": rx },
+          { "appliedPromotion.name": rx },
         ];
 
         if (userIds.length) ors.unshift({ user: { $in: userIds } });
@@ -421,7 +653,7 @@ exports.adminList = async (req, res, next) => {
   }
 };
 
-// Admin: update order status (+ audit log)
+// Admin: update order status
 exports.updateStatus = async (req, res, next) => {
   try {
     const { status } = req.body || {};
@@ -439,7 +671,6 @@ exports.updateStatus = async (req, res, next) => {
     order.status = status;
     await order.save();
 
-    // Audit log (non-blocking-ish: if log fails, order still updated)
     try {
       await AdminAuditLog.create({
         actor: req.user.sub,
@@ -456,7 +687,7 @@ exports.updateStatus = async (req, res, next) => {
         },
       });
     } catch {
-      // ignore audit errors
+      // ignore
     }
 
     res.json(order);

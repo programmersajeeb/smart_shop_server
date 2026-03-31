@@ -14,7 +14,14 @@ const ApiError = require("../utils/apiError");
  * Admin : PUT /page-config/admin-settings
  */
 
-const ALLOWED_ICON_KEYS = new Set(["ShoppingBag", "Shirt", "Watch", "Gem", "Baby", "Gift"]);
+const ALLOWED_ICON_KEYS = new Set([
+  "ShoppingBag",
+  "Shirt",
+  "Watch",
+  "Gem",
+  "Baby",
+  "Gift",
+]);
 const ALLOWED_SHOP_SORTS = new Set(["newest", "priceLow", "priceHigh"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 const HEX_COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
@@ -103,21 +110,39 @@ function defaultHomeConfig() {
       subtitle: "Fresh picks from your most recently updated in-stock catalog.",
       ctaLabel: "View all products",
       ctaHref: "/shop",
+      enabled: true,
+      hideWhenEmpty: true,
+      maxItems: 4,
+      minItems: 1,
+      excludeDuplicates: true,
+      requireInStock: true,
     },
 
     bestSellers: {
       title: "Best Sellers",
-      subtitle:
-        "A curated storefront mix from the newest and most relevant active products.",
+      subtitle: "Top-selling products ranked from completed commerce activity.",
       ctaLabel: "Browse best picks",
       ctaHref: "/shop?sort=latest",
+      enabled: true,
+      hideWhenEmpty: true,
+      maxItems: 8,
+      minItems: 1,
+      excludeDuplicates: true,
+      requireInStock: true,
     },
 
     flashSale: {
       title: "Flash Sale",
-      subtitle: "Value-first picks from the lowest-priced items currently in stock.",
+      subtitle: "Live discounted products with real compare-at pricing.",
       ctaLabel: "Shop deals",
       ctaHref: "",
+      enabled: true,
+      hideWhenEmpty: true,
+      maxItems: 4,
+      minItems: 1,
+      excludeDuplicates: true,
+      requireInStock: true,
+      requireDiscount: true,
     },
 
     whyChooseUs: {
@@ -261,7 +286,8 @@ function defaultAdminSettings() {
     },
     site: {
       maintenanceMode: false,
-      maintenanceMessage: "We are performing scheduled maintenance. Please try again soon.",
+      maintenanceMessage:
+        "We are performing scheduled maintenance. Please try again soon.",
     },
   };
 }
@@ -282,6 +308,7 @@ function isSafeUrl(raw) {
   const v = String(raw || "").trim();
   if (!v) return false;
   if (v.startsWith("/")) return true;
+
   try {
     const u = new URL(v);
     return u.protocol === "http:" || u.protocol === "https:";
@@ -308,6 +335,7 @@ function normalizeEmails(list) {
   const inArr = Array.isArray(list) ? list : [];
   const out = [];
   const seen = new Set();
+
   for (const raw of inArr) {
     const e = normalizeEmail(raw);
     if (!e) continue;
@@ -315,6 +343,7 @@ function normalizeEmails(list) {
     seen.add(e);
     out.push(e);
   }
+
   return out.slice(0, 25);
 }
 
@@ -382,6 +411,50 @@ function normalizeSimpleItems(items, limits = {}) {
     .slice(0, maxItems);
 }
 
+function normalizeMerchandisingSection(input, base, options = {}) {
+  const fallbackMaxItems = Number.isFinite(Number(options.maxItems))
+    ? Number(options.maxItems)
+    : 4;
+
+  const maxItems = clampInt(
+    input?.maxItems,
+    1,
+    12,
+    base.maxItems || fallbackMaxItems
+  );
+
+  const minItemsRaw = clampInt(
+    input?.minItems,
+    0,
+    12,
+    base.minItems || 1
+  );
+
+  const minItems = Math.min(minItemsRaw, maxItems);
+
+  return {
+    title: sanitizeString(input?.title, 80) || base.title,
+    subtitle: sanitizeString(input?.subtitle, 220) || base.subtitle,
+    ctaLabel: sanitizeString(input?.ctaLabel, 40) || base.ctaLabel,
+    ctaHref: normalizeUrl(input?.ctaHref) || base.ctaHref,
+    enabled: input?.enabled !== false,
+    hideWhenEmpty: input?.hideWhenEmpty !== false,
+    maxItems,
+    minItems,
+    excludeDuplicates: input?.excludeDuplicates !== false,
+    requireInStock: input?.requireInStock !== false,
+    ...(options.includeRequireDiscount
+      ? {
+          requireDiscount:
+            input?.requireDiscount === true ||
+            input?.requireDiscount === "true" ||
+            input?.requireDiscount === 1 ||
+            input?.requireDiscount === "1",
+        }
+      : {}),
+  };
+}
+
 function normalizeShopSort(value, fallback = "newest") {
   const raw = String(value || "").trim();
   if (!raw) return fallback;
@@ -414,10 +487,8 @@ function normalizeShopBadges(input, defaults = []) {
 
     out.push({
       id:
-        sanitizeString(
-          typeof item === "string" ? "" : item?.id,
-          60
-        ) || `badge-${index + 1}`,
+        sanitizeString(typeof item === "string" ? "" : item?.id, 60) ||
+        `badge-${index + 1}`,
       label,
     });
   }
@@ -520,7 +591,10 @@ function validateShopPayload(body) {
   }
 
   const brandsIn = Array.isArray(body?.brands) ? body.brands : [];
-  const brands = brandsIn.map((b) => normalizeSpaces(b, 40)).filter(Boolean).slice(0, 80);
+  const brands = brandsIn
+    .map((b) => normalizeSpaces(b, 40))
+    .filter(Boolean)
+    .slice(0, 80);
   const brandsDeduped = Array.from(new Set(brands.map((b) => b.trim())));
 
   const priceMaxNum = Number(body?.priceMax);
@@ -580,13 +654,15 @@ function validateHomePayload(body) {
     hero: {
       eyebrow: sanitizeString(heroIn.eyebrow, 40) || base.hero.eyebrow,
       title: sanitizeString(heroIn.title, 140) || base.hero.title,
-      description: sanitizeString(heroIn.description, 320) || base.hero.description,
+      description:
+        sanitizeString(heroIn.description, 320) || base.hero.description,
       image: normalizeUrl(heroIn.image),
       primaryCtaLabel:
         sanitizeString(heroIn.primaryCtaLabel, 40) || base.hero.primaryCtaLabel,
       primaryCtaHref: normalizeUrl(heroIn.primaryCtaHref),
       secondaryCtaLabel:
-        sanitizeString(heroIn.secondaryCtaLabel, 40) || base.hero.secondaryCtaLabel,
+        sanitizeString(heroIn.secondaryCtaLabel, 40) ||
+        base.hero.secondaryCtaLabel,
       secondaryCtaHref:
         normalizeUrl(heroIn.secondaryCtaHref) || base.hero.secondaryCtaHref,
       stats:
@@ -601,29 +677,18 @@ function validateHomePayload(body) {
         sanitizeString(collectionsIn.subtitle, 220) || base.collections.subtitle,
     },
 
-    trending: {
-      title: sanitizeString(trendingIn.title, 80) || base.trending.title,
-      subtitle: sanitizeString(trendingIn.subtitle, 220) || base.trending.subtitle,
-      ctaLabel: sanitizeString(trendingIn.ctaLabel, 40) || base.trending.ctaLabel,
-      ctaHref: normalizeUrl(trendingIn.ctaHref) || base.trending.ctaHref,
-    },
+    trending: normalizeMerchandisingSection(trendingIn, base.trending, {
+      maxItems: 4,
+    }),
 
-    bestSellers: {
-      title: sanitizeString(bestSellersIn.title, 80) || base.bestSellers.title,
-      subtitle:
-        sanitizeString(bestSellersIn.subtitle, 220) || base.bestSellers.subtitle,
-      ctaLabel:
-        sanitizeString(bestSellersIn.ctaLabel, 40) || base.bestSellers.ctaLabel,
-      ctaHref: normalizeUrl(bestSellersIn.ctaHref) || base.bestSellers.ctaHref,
-    },
+    bestSellers: normalizeMerchandisingSection(bestSellersIn, base.bestSellers, {
+      maxItems: 8,
+    }),
 
-    flashSale: {
-      title: sanitizeString(flashSaleIn.title, 80) || base.flashSale.title,
-      subtitle:
-        sanitizeString(flashSaleIn.subtitle, 220) || base.flashSale.subtitle,
-      ctaLabel: sanitizeString(flashSaleIn.ctaLabel, 40) || base.flashSale.ctaLabel,
-      ctaHref: normalizeUrl(flashSaleIn.ctaHref),
-    },
+    flashSale: normalizeMerchandisingSection(flashSaleIn, base.flashSale, {
+      maxItems: 4,
+      includeRequireDiscount: true,
+    }),
 
     whyChooseUs: {
       title: sanitizeString(whyChooseUsIn.title, 80) || base.whyChooseUs.title,
@@ -639,7 +704,8 @@ function validateHomePayload(body) {
     },
 
     testimonials: {
-      title: sanitizeString(testimonialsIn.title, 80) || base.testimonials.title,
+      title:
+        sanitizeString(testimonialsIn.title, 80) || base.testimonials.title,
       items: normalizeSimpleItems(testimonialsIn.items, {
         maxItems: 10,
         nameMax: 60,
@@ -654,14 +720,18 @@ function validateHomePayload(body) {
 
     seasonalBanner: {
       eyebrow:
-        sanitizeString(seasonalBannerIn.eyebrow, 40) || base.seasonalBanner.eyebrow,
-      title: sanitizeString(seasonalBannerIn.title, 120) || base.seasonalBanner.title,
+        sanitizeString(seasonalBannerIn.eyebrow, 40) ||
+        base.seasonalBanner.eyebrow,
+      title:
+        sanitizeString(seasonalBannerIn.title, 120) ||
+        base.seasonalBanner.title,
       description:
         sanitizeString(seasonalBannerIn.description, 260) ||
         base.seasonalBanner.description,
       image: normalizeUrl(seasonalBannerIn.image),
       ctaLabel:
-        sanitizeString(seasonalBannerIn.ctaLabel, 40) || base.seasonalBanner.ctaLabel,
+        sanitizeString(seasonalBannerIn.ctaLabel, 40) ||
+        base.seasonalBanner.ctaLabel,
       ctaHref:
         normalizeUrl(seasonalBannerIn.ctaHref) || base.seasonalBanner.ctaHref,
     },
@@ -689,16 +759,20 @@ function validateHomePayload(body) {
     },
 
     instagramFeed: {
-      title: sanitizeString(instagramFeedIn.title, 80) || base.instagramFeed.title,
+      title:
+        sanitizeString(instagramFeedIn.title, 80) || base.instagramFeed.title,
       subtitle:
-        sanitizeString(instagramFeedIn.subtitle, 220) || base.instagramFeed.subtitle,
+        sanitizeString(instagramFeedIn.subtitle, 220) ||
+        base.instagramFeed.subtitle,
     },
 
     brandStory: {
-      eyebrow: sanitizeString(brandStoryIn.eyebrow, 40) || base.brandStory.eyebrow,
+      eyebrow:
+        sanitizeString(brandStoryIn.eyebrow, 40) || base.brandStory.eyebrow,
       title: sanitizeString(brandStoryIn.title, 140) || base.brandStory.title,
       description:
-        sanitizeString(brandStoryIn.description, 320) || base.brandStory.description,
+        sanitizeString(brandStoryIn.description, 320) ||
+        base.brandStory.description,
       image: normalizeUrl(brandStoryIn.image),
       ctaLabel:
         sanitizeString(brandStoryIn.ctaLabel, 40) || base.brandStory.ctaLabel,
@@ -708,11 +782,14 @@ function validateHomePayload(body) {
     newsletter: {
       title: sanitizeString(newsletterIn.title, 80) || base.newsletter.title,
       description:
-        sanitizeString(newsletterIn.description, 220) || base.newsletter.description,
+        sanitizeString(newsletterIn.description, 220) ||
+        base.newsletter.description,
       placeholder:
-        sanitizeString(newsletterIn.placeholder, 80) || base.newsletter.placeholder,
+        sanitizeString(newsletterIn.placeholder, 80) ||
+        base.newsletter.placeholder,
       buttonLabel:
-        sanitizeString(newsletterIn.buttonLabel, 40) || base.newsletter.buttonLabel,
+        sanitizeString(newsletterIn.buttonLabel, 40) ||
+        base.newsletter.buttonLabel,
     },
   };
 }
@@ -734,8 +811,10 @@ function validateAdminSettingsPayload(body) {
     supportPhone: sanitizeString(storeIn.supportPhone, 40),
     address: normalizeSpaces(storeIn.address, 200),
     currency:
-      String(storeIn.currency || base.store.currency).trim().toUpperCase().slice(0, 8) ||
-      base.store.currency,
+      String(storeIn.currency || base.store.currency)
+        .trim()
+        .toUpperCase()
+        .slice(0, 8) || base.store.currency,
     timezone:
       String(storeIn.timezone || base.store.timezone).trim().slice(0, 60) ||
       base.store.timezone,
@@ -891,7 +970,12 @@ exports.getShopPublic = async (req, res, next) => {
 exports.upsertShop = async (req, res, next) => {
   try {
     const data = validateShopPayload(req.body || {});
-    const doc = await updateConfigWithVersioning(req, "shop", data, "pageConfig.shop.update");
+    const doc = await updateConfigWithVersioning(
+      req,
+      "shop",
+      data,
+      "pageConfig.shop.update"
+    );
 
     res.json({
       key: doc.key,
@@ -911,10 +995,12 @@ exports.upsertShop = async (req, res, next) => {
 exports.getHomePublic = async (req, res, next) => {
   try {
     const doc = await getOrCreate("home", defaultHomeConfig());
+    const safeData = validateHomePayload(doc?.data || {});
+
     res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
     res.json({
       key: doc.key,
-      data: doc.data || defaultHomeConfig(),
+      data: safeData,
       updatedAt: doc.updatedAt,
       version: doc.version,
     });
@@ -926,7 +1012,12 @@ exports.getHomePublic = async (req, res, next) => {
 exports.upsertHome = async (req, res, next) => {
   try {
     const data = validateHomePayload(req.body || {});
-    const doc = await updateConfigWithVersioning(req, "home", data, "pageConfig.home.update");
+    const doc = await updateConfigWithVersioning(
+      req,
+      "home",
+      data,
+      "pageConfig.home.update"
+    );
 
     res.json({
       key: doc.key,

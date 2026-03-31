@@ -10,6 +10,7 @@ router.use("/upload", require("./upload.routes"));
 router.use("/media", require("./media.routes"));
 router.use("/cart", require("./cart.routes"));
 router.use("/orders", require("./order.routes"));
+router.use("/promotions", require("./promotion.routes"));
 router.use("/settings", require("./settings.routes"));
 
 // Admin

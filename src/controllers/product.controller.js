@@ -1,7 +1,9 @@
 const Product = require("../models/Product");
 const PageConfig = require("../models/PageConfig");
+const Promotion = require("../models/Promotion");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const ApiError = require("../utils/apiError");
+const Order = require("../models/Order");
 
 /**
  * ============================================================
@@ -16,6 +18,7 @@ const ApiError = require("../utils/apiError");
  * ✅ Inventory Summary: KPI cards for inventory module
  * ✅ Bulk Inventory Update: stock/threshold update for selected products
  * ✅ Homepage payload: curated home sections for enterprise storefront
+ * ✅ Flash sale campaign timer support from Promotion module
  * ✅ Audit logging (best-effort, never breaks flows)
  * ============================================================
  */
@@ -374,6 +377,75 @@ function normalizeFacetRows(rows = []) {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+function normalizeSectionBehavior(raw = {}, fallbackMaxItems = 4) {
+  return {
+    enabled: raw?.enabled !== false,
+    hideWhenEmpty: raw?.hideWhenEmpty !== false,
+    maxItems: clampHomeInt(raw?.maxItems, 1, 12, fallbackMaxItems),
+    minItems: clampHomeInt(raw?.minItems, 0, 12, 1),
+    excludeDuplicates: raw?.excludeDuplicates !== false,
+    requireInStock: raw?.requireInStock !== false,
+    requireDiscount: raw?.requireDiscount === true,
+  };
+}
+
+function buildSectionPayload(config = {}, behavior = {}, products = [], extras = {}) {
+  const items = Array.isArray(products) ? products : [];
+  const visible =
+    behavior.enabled &&
+    (!behavior.hideWhenEmpty || items.length >= behavior.minItems);
+
+  return {
+    title: sanitizeHomeText(config?.title, 80) || "",
+    subtitle: sanitizeHomeText(config?.subtitle, 220) || "",
+    products: visible ? items : [],
+    cta: {
+      label: sanitizeHomeText(config?.ctaLabel, 40) || "View all",
+      href: sanitizeHomeUrl(config?.ctaHref) || "/shop",
+    },
+    enabled: behavior.enabled,
+    visible,
+    hideWhenEmpty: behavior.hideWhenEmpty,
+    minItems: behavior.minItems,
+    maxItems: behavior.maxItems,
+    excludeDuplicates: behavior.excludeDuplicates,
+    requireInStock: behavior.requireInStock,
+    requireDiscount: behavior.requireDiscount,
+    ...extras,
+  };
+}
+
+function orderProductsByIdList(products = [], ids = []) {
+  const map = new Map(
+    (Array.isArray(products) ? products : []).map((p) => [String(p._id), p])
+  );
+
+  const out = [];
+  for (const id of ids) {
+    const item = map.get(String(id));
+    if (item) out.push(item);
+  }
+  return out;
+}
+
+function isDiscountedProduct(product) {
+  const price = Number(product?.price || 0);
+  const compareAtPrice = Number(product?.compareAtPrice || 0);
+  return compareAtPrice > 0 && compareAtPrice > price;
+}
+
+function getPromotionComputedStatus(promotion, now = new Date()) {
+  if (!promotion?.isActive) return "inactive";
+
+  const startAt = promotion?.startAt ? new Date(promotion.startAt) : null;
+  const endAt = promotion?.endAt ? new Date(promotion.endAt) : null;
+
+  if (startAt && startAt > now) return "scheduled";
+  if (endAt && endAt < now) return "expired";
+
+  return "active";
+}
+
 // GET /products (public)
 exports.list = async (req, res, next) => {
   try {
@@ -500,31 +572,33 @@ exports.home = async (_req, res, next) => {
   try {
     const activeMatch = { isActive: true };
     const inStockMatch = { isActive: true, stock: { $gt: 0 } };
+    const now = new Date();
 
     const [
       homeCfgDoc,
       latestProducts,
-      cheapestProducts,
       featuredProducts,
       collectionAgg,
       allBrands,
       allCategories,
       priceAgg,
       activeCount,
+      discountedRaw,
+      bestSellerAgg,
+      activeFlashCampaign,
     ] = await Promise.all([
       PageConfig.findOne({ key: "home" }).lean(),
+
       Product.find(inStockMatch)
         .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
-        .limit(16)
+        .limit(24)
         .lean(),
-      Product.find(inStockMatch)
-        .sort({ price: 1, updatedAt: -1, _id: -1 })
-        .limit(12)
-        .lean(),
+
       Product.find(activeMatch)
         .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
-        .limit(16)
+        .limit(24)
         .lean(),
+
       Product.aggregate([
         { $match: activeMatch },
         {
@@ -538,24 +612,144 @@ exports.home = async (_req, res, next) => {
         { $sort: { count: -1, _id: 1 } },
         { $limit: 6 },
       ]),
+
       Product.distinct("brand", { ...activeMatch, brand: { $nin: [null, ""] } }),
       Product.distinct("category", { ...activeMatch, category: { $nin: [null, ""] } }),
+
       Product.aggregate([
         { $match: activeMatch },
         { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } },
       ]),
+
       Product.countDocuments(activeMatch),
+
+      Product.find({
+        ...inStockMatch,
+        compareAtPrice: { $gt: 0 },
+      })
+        .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
+        .limit(40)
+        .lean(),
+
+      Order.aggregate([
+        {
+          $match: {
+            status: { $in: ["paid", "processing", "shipped", "delivered"] },
+          },
+        },
+        { $unwind: "$items" },
+        {
+          $group: {
+            _id: "$items.product",
+            soldQty: { $sum: "$items.qty" },
+            orderCount: { $sum: 1 },
+            lastSoldAt: { $max: "$createdAt" },
+          },
+        },
+        { $sort: { soldQty: -1, orderCount: -1, lastSoldAt: -1 } },
+        { $limit: 40 },
+      ]),
+
+      Promotion.findOne({
+        type: "flash_sale",
+        isActive: true,
+      })
+        .sort({ startAt: 1, createdAt: -1 })
+        .lean(),
     ]);
 
     const homeCfg = homeCfgDoc?.data || {};
 
+    const heroCfg = homeCfg?.hero || {};
+    const collectionsCfg = homeCfg?.collections || {};
+    const trendingCfg = homeCfg?.trending || {};
+    const bestCfg = homeCfg?.bestSellers || {};
+    const flashCfg = homeCfg?.flashSale || {};
+    const whyCfg = homeCfg?.whyChooseUs || {};
+    const testimonialsCfg = homeCfg?.testimonials || {};
+    const seasonalCfg = homeCfg?.seasonalBanner || {};
+    const priceCfg = homeCfg?.shopByPrice || {};
+    const styleCfg = homeCfg?.shopByStyle || {};
+    const feedCfg = homeCfg?.instagramFeed || {};
+    const brandStoryCfg = homeCfg?.brandStory || {};
+    const newsletterCfg = homeCfg?.newsletter || {};
+
+    const trendingBehavior = normalizeSectionBehavior(trendingCfg, 4);
+    const bestBehavior = normalizeSectionBehavior(bestCfg, 8);
+    const flashBehavior = normalizeSectionBehavior(
+      { ...flashCfg, requireDiscount: true },
+      4
+    );
+
     const latestCards = latestProducts.map(mapProductCard);
-    const cheapestCards = cheapestProducts.map(mapProductCard);
     const featuredCards = featuredProducts.map(mapProductCard);
 
-    const trendingProducts = uniqueProducts(latestCards, 4);
-    const bestSellerProducts = uniqueProducts([...latestCards, ...featuredCards], 8);
-    const flashSaleProducts = uniqueProducts(cheapestCards, 4);
+    const discountedCards = discountedRaw
+      .filter(isDiscountedProduct)
+      .map((p) => ({
+        ...mapProductCard(p),
+        discountPercent: Math.max(
+          1,
+          Math.round(
+            ((Number(p.compareAtPrice) - Number(p.price)) / Number(p.compareAtPrice)) * 100
+          )
+        ),
+      }))
+      .sort((a, b) => {
+        const diffA = Number(a.compareAtPrice || 0) - Number(a.price || 0);
+        const diffB = Number(b.compareAtPrice || 0) - Number(b.price || 0);
+        if (diffB !== diffA) return diffB - diffA;
+        return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+      });
+
+    const bestSellerIds = bestSellerAgg
+      .map((row) => String(row?._id || "").trim())
+      .filter(Boolean);
+
+    const bestSellerDocs =
+      bestSellerIds.length > 0
+        ? await Product.find({
+            _id: { $in: bestSellerIds },
+            isActive: true,
+            stock: { $gt: 0 },
+          }).lean()
+        : [];
+
+    const bestSellerProductsOrdered = orderProductsByIdList(bestSellerDocs, bestSellerIds).map(
+      mapProductCard
+    );
+
+    const usedIds = new Set();
+
+    const flashSaleProducts = uniqueProducts(discountedCards, flashBehavior.maxItems);
+    if (flashBehavior.excludeDuplicates) {
+      for (const item of flashSaleProducts) {
+        if (item?.id) usedIds.add(String(item.id));
+      }
+    }
+
+    let bestSellerCandidates = bestSellerProductsOrdered;
+    if (bestBehavior.excludeDuplicates) {
+      bestSellerCandidates = bestSellerCandidates.filter(
+        (item) => !usedIds.has(String(item?.id || ""))
+      );
+    }
+
+    const bestSellerProducts = uniqueProducts(bestSellerCandidates, bestBehavior.maxItems);
+    if (bestBehavior.excludeDuplicates) {
+      for (const item of bestSellerProducts) {
+        if (item?.id) usedIds.add(String(item.id));
+      }
+    }
+
+    let trendingCandidates = latestCards;
+    if (trendingBehavior.excludeDuplicates) {
+      trendingCandidates = trendingCandidates.filter(
+        (item) => !usedIds.has(String(item?.id || ""))
+      );
+    }
+
+    const trendingProducts = uniqueProducts(trendingCandidates, trendingBehavior.maxItems);
 
     const priceMin = Number(priceAgg?.[0]?.min ?? 0);
     const priceMax = Number(priceAgg?.[0]?.max ?? 0);
@@ -577,27 +771,13 @@ exports.home = async (_req, res, next) => {
 
     const fallbackSeasonalImage =
       pickPrimaryImageUrl(featuredProducts[1]) ||
-      pickPrimaryImageUrl(cheapestProducts[0]) ||
+      pickPrimaryImageUrl(discountedRaw[0]) ||
       fallbackHeroImage;
 
     const fallbackBrandStoryImage =
       pickPrimaryImageUrl(featuredProducts[2]) ||
       pickPrimaryImageUrl(latestProducts[1]) ||
       fallbackHeroImage;
-
-    const heroCfg = homeCfg?.hero || {};
-    const collectionsCfg = homeCfg?.collections || {};
-    const trendingCfg = homeCfg?.trending || {};
-    const bestCfg = homeCfg?.bestSellers || {};
-    const flashCfg = homeCfg?.flashSale || {};
-    const whyCfg = homeCfg?.whyChooseUs || {};
-    const testimonialsCfg = homeCfg?.testimonials || {};
-    const seasonalCfg = homeCfg?.seasonalBanner || {};
-    const priceCfg = homeCfg?.shopByPrice || {};
-    const styleCfg = homeCfg?.shopByStyle || {};
-    const feedCfg = homeCfg?.instagramFeed || {};
-    const brandStoryCfg = homeCfg?.brandStory || {};
-    const newsletterCfg = homeCfg?.newsletter || {};
 
     const heroStats =
       Array.isArray(heroCfg?.stats) && heroCfg.stats.length
@@ -659,6 +839,22 @@ exports.home = async (_req, res, next) => {
             },
           ];
 
+    const flashCampaignStatus = activeFlashCampaign
+      ? getPromotionComputedStatus(activeFlashCampaign, now)
+      : null;
+
+    const flashCampaign =
+      activeFlashCampaign && (flashCampaignStatus === "active" || flashCampaignStatus === "scheduled")
+        ? {
+            _id: activeFlashCampaign._id,
+            name: activeFlashCampaign.name || "Flash Sale",
+            code: activeFlashCampaign.code || null,
+            startAt: activeFlashCampaign.startAt || null,
+            endAt: activeFlashCampaign.endAt || null,
+            computedStatus: flashCampaignStatus,
+          }
+        : null;
+
     res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
     res.json({
       ok: true,
@@ -694,41 +890,58 @@ exports.home = async (_req, res, next) => {
         },
 
         trending: {
-          title: sanitizeHomeText(trendingCfg?.title, 80) || "Trending Now",
-          subtitle:
-            sanitizeHomeText(trendingCfg?.subtitle, 220) ||
-            "Fresh picks from your most recently updated in-stock catalog.",
-          products: trendingProducts,
-          cta: {
-            label: sanitizeHomeText(trendingCfg?.ctaLabel, 40) || "View all products",
-            href: sanitizeHomeUrl(trendingCfg?.ctaHref) || "/shop",
-          },
+          ...buildSectionPayload(
+            {
+              ...trendingCfg,
+              title: sanitizeHomeText(trendingCfg?.title, 80) || "Trending Now",
+              subtitle:
+                sanitizeHomeText(trendingCfg?.subtitle, 220) ||
+                "Fresh picks from your most recently updated in-stock catalog.",
+              ctaLabel: sanitizeHomeText(trendingCfg?.ctaLabel, 40) || "View all products",
+              ctaHref: sanitizeHomeUrl(trendingCfg?.ctaHref) || "/shop",
+            },
+            trendingBehavior,
+            trendingProducts
+          ),
         },
 
         bestSellers: {
-          title: sanitizeHomeText(bestCfg?.title, 80) || "Best Sellers",
-          subtitle:
-            sanitizeHomeText(bestCfg?.subtitle, 220) ||
-            "A curated storefront mix from the newest and most relevant active products.",
-          products: bestSellerProducts,
-          cta: {
-            label: sanitizeHomeText(bestCfg?.ctaLabel, 40) || "Browse best picks",
-            href: sanitizeHomeUrl(bestCfg?.ctaHref) || "/shop?sort=latest",
-          },
+          ...buildSectionPayload(
+            {
+              ...bestCfg,
+              title: sanitizeHomeText(bestCfg?.title, 80) || "Best Sellers",
+              subtitle:
+                sanitizeHomeText(bestCfg?.subtitle, 220) ||
+                "Top-selling products ranked from completed commerce activity.",
+              ctaLabel: sanitizeHomeText(bestCfg?.ctaLabel, 40) || "Browse best picks",
+              ctaHref: sanitizeHomeUrl(bestCfg?.ctaHref) || "/shop?sort=latest",
+            },
+            bestBehavior,
+            bestSellerProducts
+          ),
         },
 
         flashSale: {
-          title: sanitizeHomeText(flashCfg?.title, 80) || "Flash Sale",
-          subtitle:
-            sanitizeHomeText(flashCfg?.subtitle, 220) ||
-            "Value-first picks from the lowest-priced items currently in stock.",
-          products: flashSaleProducts,
-          cta: {
-            label: sanitizeHomeText(flashCfg?.ctaLabel, 40) || "Shop deals",
-            href:
-              sanitizeHomeUrl(flashCfg?.ctaHref) ||
-              `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}&inStock=true`,
-          },
+          ...buildSectionPayload(
+            {
+              ...flashCfg,
+              title: sanitizeHomeText(flashCfg?.title, 80) || "Flash Sale",
+              subtitle:
+                sanitizeHomeText(flashCfg?.subtitle, 220) ||
+                "Live discounted products with real compare-at pricing from your active catalog.",
+              ctaLabel: sanitizeHomeText(flashCfg?.ctaLabel, 40) || "Shop deals",
+              ctaHref:
+                sanitizeHomeUrl(flashCfg?.ctaHref) ||
+                `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}&inStock=true`,
+            },
+            flashBehavior,
+            flashSaleProducts,
+            {
+              startAt: flashCampaign?.startAt || null,
+              endAt: flashCampaign?.endAt || null,
+              campaign: flashCampaign,
+            }
+          ),
         },
 
         whyChooseUs: {
