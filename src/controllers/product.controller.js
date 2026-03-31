@@ -1670,7 +1670,7 @@ exports.update = async (req, res, next) => {
   }
 };
 
-// DELETE /products/:id (admin) => soft delete
+// DELETE /products/:id (admin) => soft delete / deactivate
 exports.remove = async (req, res, next) => {
   try {
     const id = String(req.params.id || "").trim();
@@ -1695,7 +1695,64 @@ exports.remove = async (req, res, next) => {
       after: pickProductSnapshot(doc),
     });
 
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      mode: "deactivated",
+      message: "Product deactivated successfully",
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+// DELETE /products/admin/:id/permanent (admin) => hard delete if safe
+exports.removePermanent = async (req, res, next) => {
+  try {
+    const id = String(req.params.id || "").trim();
+    if (!isValidObjectIdString(id)) throw new ApiError(400, "Invalid id");
+
+    const beforeDoc = await Product.findById(id).lean();
+    if (!beforeDoc) throw new ApiError(404, "Product not found");
+
+    const [orderRefCount, promotionRefCount] = await Promise.all([
+      Order.countDocuments({ "items.product": id }),
+      Promotion.countDocuments({ "target.productIds": id }),
+    ]);
+
+    if (orderRefCount > 0 || promotionRefCount > 0) {
+      throw new ApiError(
+        409,
+        [
+          "This product cannot be permanently deleted because it is already referenced.",
+          orderRefCount > 0 ? `Used in orders: ${orderRefCount}` : null,
+          promotionRefCount > 0 ? `Used in promotions: ${promotionRefCount}` : null,
+          "Deactivate it instead.",
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+    }
+
+    const deleted = await Product.findByIdAndDelete(id);
+    if (!deleted) throw new ApiError(404, "Product not found");
+
+    await logAction(req, {
+      action: "product.deletePermanent",
+      entity: "product",
+      entityId: id,
+      before: pickProductSnapshot(beforeDoc),
+      after: null,
+      meta: {
+        orderRefCount,
+        promotionRefCount,
+      },
+    });
+
+    res.json({
+      ok: true,
+      mode: "deleted",
+      message: "Product permanently deleted",
+    });
   } catch (e) {
     next(e);
   }

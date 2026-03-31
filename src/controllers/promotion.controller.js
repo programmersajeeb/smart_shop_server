@@ -21,7 +21,13 @@ function normalizeCode(value) {
 }
 
 function toBool(value) {
-  return value === true || value === "true" || value === 1 || value === "1" || value === "on";
+  return (
+    value === true ||
+    value === "true" ||
+    value === 1 ||
+    value === "1" ||
+    value === "on"
+  );
 }
 
 function clampNumber(value, fallback = 0, min = 0) {
@@ -76,6 +82,87 @@ function getPromotionComputedStatus(promotion, now = new Date()) {
   return "active";
 }
 
+function buildTargetSummary(promotion) {
+  const appliesTo = String(promotion?.appliesTo || "all").trim();
+
+  if (appliesTo === "all") {
+    return {
+      mode: "all",
+      label: "All products",
+      count: null,
+    };
+  }
+
+  if (appliesTo === "specific_products") {
+    const ids = Array.isArray(promotion?.target?.productIds)
+      ? promotion.target.productIds
+      : [];
+
+    return {
+      mode: "specific_products",
+      label: `${ids.length} product${ids.length === 1 ? "" : "s"}`,
+      count: ids.length,
+    };
+  }
+
+  if (appliesTo === "categories") {
+    const values = Array.isArray(promotion?.target?.categories)
+      ? promotion.target.categories
+      : [];
+
+    return {
+      mode: "categories",
+      label: values.length ? values.join(", ") : "Categories",
+      count: values.length,
+      values,
+    };
+  }
+
+  if (appliesTo === "brands") {
+    const values = Array.isArray(promotion?.target?.brands)
+      ? promotion.target.brands
+      : [];
+
+    return {
+      mode: "brands",
+      label: values.length ? values.join(", ") : "Brands",
+      count: values.length,
+      values,
+    };
+  }
+
+  return {
+    mode: "all",
+    label: "All products",
+    count: null,
+  };
+}
+
+async function buildTargetProductsPreview(productIds = [], limit = 6) {
+  const ids = normalizeObjectIdList(productIds).slice(0, limit);
+  if (!ids.length) return [];
+
+  const rows = await Product.find({ _id: { $in: ids } })
+    .select("_id title category brand price isActive stock")
+    .lean();
+
+  const map = new Map(rows.map((item) => [String(item._id), item]));
+
+  return ids
+    .map((id) => map.get(String(id)))
+    .filter(Boolean)
+    .map((product) => ({
+      _id: product._id,
+      id: String(product._id),
+      title: product.title || "",
+      category: product.category || null,
+      brand: product.brand || null,
+      price: Number(product.price || 0),
+      stock: Number(product.stock || 0),
+      isActive: Boolean(product.isActive),
+    }));
+}
+
 function normalizePromotionPayload(body = {}, actorId = null) {
   const type = String(body?.type || "").trim();
   const discountType = String(body?.discountType || "").trim();
@@ -106,7 +193,10 @@ function normalizePromotionPayload(body = {}, actorId = null) {
   const endAt = parseDate(body?.endAt);
 
   if (startAt && endAt && endAt < startAt) {
-    throw new ApiError(400, "End date must be greater than or equal to start date");
+    throw new ApiError(
+      400,
+      "End date must be greater than or equal to start date"
+    );
   }
 
   const value = clampNumber(body?.value, 0, 0);
@@ -156,7 +246,8 @@ function normalizePromotionPayload(body = {}, actorId = null) {
     code: type === "coupon" ? code : null,
     value: discountType === "free_shipping" ? 0 : value,
     minOrderAmount,
-    maxDiscountAmount: discountType === "free_shipping" ? null : maxDiscountAmount,
+    maxDiscountAmount:
+      discountType === "free_shipping" ? null : maxDiscountAmount,
     appliesTo,
     target: {
       productIds,
@@ -173,12 +264,33 @@ function normalizePromotionPayload(body = {}, actorId = null) {
   };
 }
 
-async function buildPromotionResponse(doc) {
-  const plain = doc.toObject ? doc.toObject() : doc;
-  return {
+async function buildPromotionResponse(doc, options = {}) {
+  const plain = doc?.toObject ? doc.toObject() : doc;
+  const targetSummary = buildTargetSummary(plain);
+
+  const enriched = {
     ...plain,
     computedStatus: getPromotionComputedStatus(plain),
+    targetSummary,
   };
+
+  const includeProductsPreview = options.includeProductsPreview !== false;
+
+  if (
+    includeProductsPreview &&
+    plain?.appliesTo === "specific_products" &&
+    Array.isArray(plain?.target?.productIds) &&
+    plain.target.productIds.length
+  ) {
+    enriched.targetProductsPreview = await buildTargetProductsPreview(
+      plain.target.productIds,
+      6
+    );
+  } else {
+    enriched.targetProductsPreview = [];
+  }
+
+  return enriched;
 }
 
 // GET /promotions/admin
@@ -213,12 +325,14 @@ exports.adminList = async (req, res, next) => {
       Promotion.countDocuments(filter),
     ]);
 
-    let rows = items.map((item) => ({
-      ...item,
-      computedStatus: getPromotionComputedStatus(item),
-    }));
+    let rows = await Promise.all(
+      items.map((item) => buildPromotionResponse(item, { includeProductsPreview: true }))
+    );
 
-    if (computedStatus && ["active", "scheduled", "expired", "inactive"].includes(computedStatus)) {
+    if (
+      computedStatus &&
+      ["active", "scheduled", "expired", "inactive"].includes(computedStatus)
+    ) {
       rows = rows.filter((item) => item.computedStatus === computedStatus);
     }
 
@@ -226,7 +340,10 @@ exports.adminList = async (req, res, next) => {
       promotions: rows,
       total: computedStatus ? rows.length : total,
       page,
-      pages: Math.max(1, Math.ceil((computedStatus ? rows.length : total) / limit)),
+      pages: Math.max(
+        1,
+        Math.ceil((computedStatus ? rows.length : total) / limit)
+      ),
       limit,
       skip,
     });
@@ -241,10 +358,7 @@ exports.adminGetOne = async (req, res, next) => {
     const promotion = await Promotion.findById(req.params.id).lean();
     if (!promotion) throw new ApiError(404, "Promotion not found");
 
-    res.json({
-      ...promotion,
-      computedStatus: getPromotionComputedStatus(promotion),
-    });
+    res.json(await buildPromotionResponse(promotion, { includeProductsPreview: true }));
   } catch (e) {
     next(e);
   }
@@ -266,7 +380,7 @@ exports.adminCreate = async (req, res, next) => {
       usage: { totalUsed: 0, users: [] },
     });
 
-    res.status(201).json(await buildPromotionResponse(doc));
+    res.status(201).json(await buildPromotionResponse(doc, { includeProductsPreview: true }));
   } catch (e) {
     next(e);
   }
@@ -301,7 +415,7 @@ exports.adminUpdate = async (req, res, next) => {
     Object.assign(existing, payload);
     await existing.save();
 
-    res.json(await buildPromotionResponse(existing));
+    res.json(await buildPromotionResponse(existing, { includeProductsPreview: true }));
   } catch (e) {
     next(e);
   }
@@ -318,7 +432,7 @@ exports.adminToggle = async (req, res, next) => {
     promotion.updatedBy = req.user?.sub || null;
 
     await promotion.save();
-    res.json(await buildPromotionResponse(promotion));
+    res.json(await buildPromotionResponse(promotion, { includeProductsPreview: true }));
   } catch (e) {
     next(e);
   }
@@ -360,7 +474,10 @@ exports.validateCoupon = async (req, res, next) => {
       throw new ApiError(400, `Coupon is ${status}`);
     }
 
-    if (promotion.usageLimit != null && Number(promotion?.usage?.totalUsed || 0) >= promotion.usageLimit) {
+    if (
+      promotion.usageLimit != null &&
+      Number(promotion?.usage?.totalUsed || 0) >= promotion.usageLimit
+    ) {
       throw new ApiError(400, "Coupon usage limit reached");
     }
 
@@ -403,15 +520,31 @@ exports.validateCoupon = async (req, res, next) => {
         : [];
 
       if (promotion.appliesTo === "categories") {
-        const allowed = new Set((promotion?.target?.categories || []).map((x) => String(x).toLowerCase()));
-        const matched = products.some((p) => allowed.has(String(p?.category || "").toLowerCase()));
-        if (!matched) throw new ApiError(400, "Coupon does not apply to selected categories");
+        const allowed = new Set(
+          (promotion?.target?.categories || []).map((x) =>
+            String(x).toLowerCase()
+          )
+        );
+        const matched = products.some((p) =>
+          allowed.has(String(p?.category || "").toLowerCase())
+        );
+        if (!matched) {
+          throw new ApiError(400, "Coupon does not apply to selected categories");
+        }
       }
 
       if (promotion.appliesTo === "brands") {
-        const allowed = new Set((promotion?.target?.brands || []).map((x) => String(x).toLowerCase()));
-        const matched = products.some((p) => allowed.has(String(p?.brand || "").toLowerCase()));
-        if (!matched) throw new ApiError(400, "Coupon does not apply to selected brands");
+        const allowed = new Set(
+          (promotion?.target?.brands || []).map((x) =>
+            String(x).toLowerCase()
+          )
+        );
+        const matched = products.some((p) =>
+          allowed.has(String(p?.brand || "").toLowerCase())
+        );
+        if (!matched) {
+          throw new ApiError(400, "Coupon does not apply to selected brands");
+        }
       }
     }
 
@@ -421,12 +554,15 @@ exports.validateCoupon = async (req, res, next) => {
     if (promotion.discountType === "percentage") {
       discountAmount = (subtotal * Number(promotion.value || 0)) / 100;
       if (promotion.maxDiscountAmount != null) {
-        discountAmount = Math.min(discountAmount, Number(promotion.maxDiscountAmount || 0));
+        discountAmount = Math.min(
+          discountAmount,
+          Number(promotion.maxDiscountAmount || 0)
+        );
       }
     } else if (promotion.discountType === "fixed") {
       discountAmount = Math.min(subtotal, Number(promotion.value || 0));
     } else if (promotion.discountType === "free_shipping") {
-      shippingDiscount = 0; // shipping currently 0, keep compatible for future
+      shippingDiscount = 0;
       discountAmount = 0;
     }
 
