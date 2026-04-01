@@ -20,6 +20,7 @@ const Order = require("../models/Order");
  * ✅ Homepage payload: curated home sections for enterprise storefront
  * ✅ Flash sale campaign timer support from Promotion module
  * ✅ Audit logging (best-effort, never breaks flows)
+ * ✅ Stable independent merchandising allocation
  * ============================================================
  */
 
@@ -75,7 +76,56 @@ function normalizeIdList(input) {
   );
 }
 
-function normalizeImageItem(raw) {
+function getBaseUrlFromReq(req) {
+  const envBase =
+    normalizeText(process.env.PUBLIC_API_BASE_URL) ||
+    normalizeText(process.env.APP_BASE_URL) ||
+    normalizeText(process.env.API_BASE_URL);
+
+  if (envBase) {
+    return envBase.replace(/\/+$/, "");
+  }
+
+  const forwardedProto = normalizeText(req?.headers?.["x-forwarded-proto"]);
+  const forwardedHost = normalizeText(req?.headers?.["x-forwarded-host"]);
+  const host =
+    forwardedHost ||
+    normalizeText(req?.get?.("host")) ||
+    normalizeText(req?.headers?.host);
+  const proto =
+    forwardedProto || (req?.protocol === "https" ? "https" : "http");
+
+  if (!host) return "";
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+function isAbsoluteUrl(value) {
+  return /^(https?:)?\/\//i.test(String(value || "").trim());
+}
+
+function normalizePublicMediaUrl(value, req) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  if (
+    isAbsoluteUrl(raw) ||
+    raw.startsWith("data:") ||
+    raw.startsWith("blob:")
+  ) {
+    return raw;
+  }
+
+  const baseUrl = getBaseUrlFromReq(req);
+  if (!baseUrl) return raw;
+
+  if (raw.startsWith("/")) {
+    return `${baseUrl}${raw}`;
+  }
+
+  return `${baseUrl}/${raw}`;
+}
+
+function normalizeImageItem(raw, req) {
   if (!raw) return null;
 
   if (typeof raw === "string") {
@@ -84,7 +134,7 @@ function normalizeImageItem(raw) {
 
     return {
       fileId: null,
-      url,
+      url: normalizePublicMediaUrl(url, req),
       filename: null,
       mimetype: null,
       size: 0,
@@ -101,7 +151,7 @@ function normalizeImageItem(raw) {
 
   return {
     fileId: normalizeText(raw.fileId),
-    url,
+    url: normalizePublicMediaUrl(url, req),
     filename: normalizeText(raw.filename),
     mimetype: normalizeText(raw.mimetype),
     size: toPositiveNumberOrDefault(raw.size, 0),
@@ -111,13 +161,13 @@ function normalizeImageItem(raw) {
   };
 }
 
-function normalizeImages(value) {
+function normalizeImages(value, req) {
   const list = Array.isArray(value) ? value : [];
   const out = [];
   const seen = new Set();
 
   for (const raw of list) {
-    const img = normalizeImageItem(raw);
+    const img = normalizeImageItem(raw, req);
     if (!img) continue;
 
     const key = String(img.url || "").toLowerCase();
@@ -130,7 +180,7 @@ function normalizeImages(value) {
   return out.slice(0, 20);
 }
 
-function pickProductSnapshot(p) {
+function pickProductSnapshot(p, req) {
   if (!p) return null;
   const id = p._id != null ? String(p._id) : null;
 
@@ -143,7 +193,7 @@ function pickProductSnapshot(p) {
     category: p.category,
     brand: p.brand,
     isActive: p.isActive,
-    images: Array.isArray(p.images) ? p.images : [],
+    images: normalizeImages(Array.isArray(p.images) ? p.images : [], req),
     compareAtPrice: Number(p?.compareAtPrice || 0),
     updatedAt: p.updatedAt,
     createdAt: p.createdAt,
@@ -177,7 +227,9 @@ async function logAction(req, payload) {
         path: req.originalUrl || req.url || null,
         method: req.method || null,
         requestId: req.requestId || null,
-        ...(payload.meta && typeof payload.meta === "object" ? payload.meta : {}),
+        ...(payload.meta && typeof payload.meta === "object"
+          ? payload.meta
+          : {}),
       },
     });
   } catch {
@@ -199,10 +251,12 @@ function applySearchFilter(filter, q) {
   ];
 }
 
-function pickPrimaryImageUrl(product) {
+function pickPrimaryImageUrl(product, req) {
   const first = Array.isArray(product?.images) ? product.images[0] : null;
-  if (typeof first === "string") return first || null;
-  if (first && typeof first === "object") return normalizeText(first.url);
+  if (typeof first === "string") return normalizePublicMediaUrl(first, req);
+  if (first && typeof first === "object") {
+    return normalizePublicMediaUrl(normalizeText(first.url), req);
+  }
   return null;
 }
 
@@ -213,30 +267,45 @@ function trimText(value, max = 160) {
   return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
 }
 
-function mapProductCard(product) {
+function mapProductCard(product, req) {
+  const price = Number(product?.price || 0);
+  const compareAtPrice = Number(product?.compareAtPrice || 0);
+  const isDiscounted = compareAtPrice > 0 && compareAtPrice > price;
+  const discountPercent = isDiscounted
+    ? Math.max(
+        1,
+        Math.round(((compareAtPrice - price) / compareAtPrice) * 100)
+      )
+    : 0;
+
   return {
     _id: product?._id,
     id: product?._id ? String(product._id) : null,
     title: product?.title || "",
     description: trimText(product?.description || "", 140),
-    price: Number(product?.price || 0),
-    compareAtPrice: Number(product?.compareAtPrice || 0),
+    price,
+    compareAtPrice,
+    discountPercent,
+    isDiscounted,
     stock: Number(product?.stock || 0),
     lowStockThreshold: Number(product?.lowStockThreshold || 0),
     category: normalizeText(product?.category),
     brand: normalizeText(product?.brand),
-    images: Array.isArray(product?.images) ? product.images : [],
-    image: pickPrimaryImageUrl(product),
+    images: normalizeImages(
+      Array.isArray(product?.images) ? product.images : [],
+      req
+    ),
+    image: pickPrimaryImageUrl(product, req),
     isActive: Boolean(product?.isActive),
     createdAt: product?.createdAt || null,
     updatedAt: product?.updatedAt || null,
   };
 }
 
-function mergePublicProduct(product) {
+function mergePublicProduct(product, req) {
   return {
     ...(product || {}),
-    ...mapProductCard(product),
+    ...mapProductCard(product, req),
   };
 }
 
@@ -264,17 +333,21 @@ function slugify(value) {
     .replace(/^-+|-+$/g, "");
 }
 
-function buildCollections(rows = []) {
+function buildCollections(rows = [], req) {
   return rows.slice(0, 6).map((row, index) => ({
-    id: slugify(row?._id || `collection-${index + 1}`) || `collection-${index + 1}`,
+    id:
+      slugify(row?._id || `collection-${index + 1}`) ||
+      `collection-${index + 1}`,
     title: String(row?._id || "Collection").trim(),
     count: Number(row?.count || 0),
-    image: normalizeText(row?.image || null),
-    href: `/shop?category=${encodeURIComponent(String(row?._id || "").trim())}`,
+    image: normalizePublicMediaUrl(normalizeText(row?.image || null), req),
+    href: `/shop?category=${encodeURIComponent(
+      String(row?._id || "").trim()
+    )}`,
   }));
 }
 
-function buildStyleOptions(products = []) {
+function buildStyleOptions(products = [], req) {
   const list = Array.isArray(products) ? products : [];
 
   const categoryMap = new Map();
@@ -283,7 +356,7 @@ function buildStyleOptions(products = []) {
   for (const product of list) {
     const category = normalizeText(product?.category);
     const brand = normalizeText(product?.brand);
-    const image = pickPrimaryImageUrl(product);
+    const image = pickPrimaryImageUrl(product, req);
 
     if (category && !categoryMap.has(category)) {
       categoryMap.set(category, image || null);
@@ -323,10 +396,10 @@ function buildStyleOptions(products = []) {
   return styles.slice(0, 8);
 }
 
-function buildInstagramFeed(products = []) {
+function buildInstagramFeed(products = [], req) {
   return products.slice(0, 6).map((p, index) => ({
     id: String(p?._id || `ig-${index + 1}`),
-    image: pickPrimaryImageUrl(p),
+    image: pickPrimaryImageUrl(p, req),
     title: p?.title || "Shop the look",
     href: `/shop?q=${encodeURIComponent(String(p?.title || "").trim())}`,
   }));
@@ -389,7 +462,12 @@ function normalizeSectionBehavior(raw = {}, fallbackMaxItems = 4) {
   };
 }
 
-function buildSectionPayload(config = {}, behavior = {}, products = [], extras = {}) {
+function buildSectionPayload(
+  config = {},
+  behavior = {},
+  products = [],
+  extras = {}
+) {
   const items = Array.isArray(products) ? products : [];
   const visible =
     behavior.enabled &&
@@ -446,11 +524,18 @@ function getPromotionComputedStatus(promotion, now = new Date()) {
   return "active";
 }
 
+function takeSectionProducts(source = [], limit = 4) {
+  return uniqueProducts(Array.isArray(source) ? source : [], limit);
+}
+
 // GET /products (public)
 exports.list = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
-    const limit = Math.min(60, Math.max(1, parseInt(req.query.limit || "20", 10)));
+    const limit = Math.min(
+      60,
+      Math.max(1, parseInt(req.query.limit || "20", 10))
+    );
     const skip = (page - 1) * limit;
 
     const q = String(req.query.q || "").trim();
@@ -516,7 +601,7 @@ exports.list = async (req, res, next) => {
       Product.countDocuments(filter),
     ]);
 
-    const products = items.map(mergePublicProduct);
+    const products = items.map((item) => mergePublicProduct(item, req));
 
     res.json({
       ok: true,
@@ -548,7 +633,9 @@ exports.facets = async (req, res, next) => {
       ]),
       Product.aggregate([
         { $match: match },
-        { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } },
+        {
+          $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } },
+        },
       ]),
     ]);
 
@@ -568,7 +655,7 @@ exports.facets = async (req, res, next) => {
 };
 
 // GET /products/home (public)
-exports.home = async (_req, res, next) => {
+exports.home = async (req, res, next) => {
   try {
     const activeMatch = { isActive: true };
     const inStockMatch = { isActive: true, stock: { $gt: 0 } };
@@ -613,12 +700,20 @@ exports.home = async (_req, res, next) => {
         { $limit: 6 },
       ]),
 
-      Product.distinct("brand", { ...activeMatch, brand: { $nin: [null, ""] } }),
-      Product.distinct("category", { ...activeMatch, category: { $nin: [null, ""] } }),
+      Product.distinct("brand", {
+        ...activeMatch,
+        brand: { $nin: [null, ""] },
+      }),
+      Product.distinct("category", {
+        ...activeMatch,
+        category: { $nin: [null, ""] },
+      }),
 
       Product.aggregate([
         { $match: activeMatch },
-        { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } },
+        {
+          $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } },
+        },
       ]),
 
       Product.countDocuments(activeMatch),
@@ -674,32 +769,51 @@ exports.home = async (_req, res, next) => {
     const brandStoryCfg = homeCfg?.brandStory || {};
     const newsletterCfg = homeCfg?.newsletter || {};
 
-    const trendingBehavior = normalizeSectionBehavior(trendingCfg, 4);
-    const bestBehavior = normalizeSectionBehavior(bestCfg, 8);
-    const flashBehavior = normalizeSectionBehavior(
-      { ...flashCfg, requireDiscount: true },
+    const trendingBehavior = normalizeSectionBehavior(
+      {
+        ...trendingCfg,
+        excludeDuplicates: false,
+      },
       4
     );
 
-    const latestCards = latestProducts.map(mapProductCard);
-    const featuredCards = featuredProducts.map(mapProductCard);
+    const bestBehavior = normalizeSectionBehavior(
+      {
+        ...bestCfg,
+        hideWhenEmpty:
+          typeof bestCfg?.hideWhenEmpty === "boolean"
+            ? bestCfg.hideWhenEmpty
+            : false,
+        excludeDuplicates: false,
+      },
+      8
+    );
+
+    const flashBehavior = normalizeSectionBehavior(
+      {
+        ...flashCfg,
+        requireDiscount: true,
+        excludeDuplicates: false,
+      },
+      4
+    );
+
+    const latestCards = latestProducts.map((item) => mapProductCard(item, req));
+    const featuredCards = featuredProducts.map((item) =>
+      mapProductCard(item, req)
+    );
 
     const discountedCards = discountedRaw
       .filter(isDiscountedProduct)
-      .map((p) => ({
-        ...mapProductCard(p),
-        discountPercent: Math.max(
-          1,
-          Math.round(
-            ((Number(p.compareAtPrice) - Number(p.price)) / Number(p.compareAtPrice)) * 100
-          )
-        ),
-      }))
+      .map((p) => mapProductCard(p, req))
       .sort((a, b) => {
         const diffA = Number(a.compareAtPrice || 0) - Number(a.price || 0);
         const diffB = Number(b.compareAtPrice || 0) - Number(b.price || 0);
         if (diffB !== diffA) return diffB - diffA;
-        return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        return (
+          new Date(b.updatedAt || 0).getTime() -
+          new Date(a.updatedAt || 0).getTime()
+        );
       });
 
     const bestSellerIds = bestSellerAgg
@@ -715,49 +829,43 @@ exports.home = async (_req, res, next) => {
           }).lean()
         : [];
 
-    const bestSellerProductsOrdered = orderProductsByIdList(bestSellerDocs, bestSellerIds).map(
-      mapProductCard
+    const bestSellerProductsOrdered = orderProductsByIdList(
+      bestSellerDocs,
+      bestSellerIds
+    ).map((item) => mapProductCard(item, req));
+
+    const flashSaleProducts = takeSectionProducts(
+      discountedCards,
+      flashBehavior.maxItems
     );
 
-    const usedIds = new Set();
+    const trendingProducts = takeSectionProducts(
+      latestCards,
+      trendingBehavior.maxItems
+    );
 
-    const flashSaleProducts = uniqueProducts(discountedCards, flashBehavior.maxItems);
-    if (flashBehavior.excludeDuplicates) {
-      for (const item of flashSaleProducts) {
-        if (item?.id) usedIds.add(String(item.id));
-      }
-    }
+    const bestSellerFallbackApplied = bestSellerProductsOrdered.length === 0;
 
-    let bestSellerCandidates = bestSellerProductsOrdered;
-    if (bestBehavior.excludeDuplicates) {
-      bestSellerCandidates = bestSellerCandidates.filter(
-        (item) => !usedIds.has(String(item?.id || ""))
-      );
-    }
-
-    const bestSellerProducts = uniqueProducts(bestSellerCandidates, bestBehavior.maxItems);
-    if (bestBehavior.excludeDuplicates) {
-      for (const item of bestSellerProducts) {
-        if (item?.id) usedIds.add(String(item.id));
-      }
-    }
-
-    let trendingCandidates = latestCards;
-    if (trendingBehavior.excludeDuplicates) {
-      trendingCandidates = trendingCandidates.filter(
-        (item) => !usedIds.has(String(item?.id || ""))
-      );
-    }
-
-    const trendingProducts = uniqueProducts(trendingCandidates, trendingBehavior.maxItems);
+    const bestSellerProducts = bestSellerFallbackApplied
+      ? takeSectionProducts(
+          [...latestCards, ...featuredCards],
+          Math.min(bestBehavior.maxItems, 8)
+        )
+      : takeSectionProducts(bestSellerProductsOrdered, bestBehavior.maxItems);
 
     const priceMin = Number(priceAgg?.[0]?.min ?? 0);
     const priceMax = Number(priceAgg?.[0]?.max ?? 0);
     const priceMid = Math.max(priceMin, Math.round((priceMin + priceMax) / 2));
 
-    const collections = buildCollections(collectionAgg);
-    const shopByStyle = buildStyleOptions([...latestProducts, ...featuredProducts]);
-    const instagramFeed = buildInstagramFeed([...latestProducts, ...featuredProducts]);
+    const collections = buildCollections(collectionAgg, req);
+    const shopByStyle = buildStyleOptions(
+      [...latestProducts, ...featuredProducts],
+      req
+    );
+    const instagramFeed = buildInstagramFeed(
+      [...latestProducts, ...featuredProducts],
+      req
+    );
 
     const safeCategory =
       normalizeText(collectionAgg?.[0]?._id) ||
@@ -765,25 +873,26 @@ exports.home = async (_req, res, next) => {
       "Collection";
 
     const fallbackHeroImage =
-      pickPrimaryImageUrl(latestProducts[0]) ||
-      pickPrimaryImageUrl(featuredProducts[0]) ||
+      pickPrimaryImageUrl(latestProducts[0], req) ||
+      pickPrimaryImageUrl(featuredProducts[0], req) ||
       "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?q=80&w=1400&auto=format&fit=crop";
 
     const fallbackSeasonalImage =
-      pickPrimaryImageUrl(featuredProducts[1]) ||
-      pickPrimaryImageUrl(discountedRaw[0]) ||
+      pickPrimaryImageUrl(featuredProducts[1], req) ||
+      pickPrimaryImageUrl(discountedRaw[0], req) ||
       fallbackHeroImage;
 
     const fallbackBrandStoryImage =
-      pickPrimaryImageUrl(featuredProducts[2]) ||
-      pickPrimaryImageUrl(latestProducts[1]) ||
+      pickPrimaryImageUrl(featuredProducts[2], req) ||
+      pickPrimaryImageUrl(latestProducts[1], req) ||
       fallbackHeroImage;
 
     const heroStats =
       Array.isArray(heroCfg?.stats) && heroCfg.stats.length
         ? heroCfg.stats
             .map((item, index) => {
-              const label = sanitizeHomeText(item?.label, 40) || `Stat ${index + 1}`;
+              const label =
+                sanitizeHomeText(item?.label, 40) || `Stat ${index + 1}`;
               let value = sanitizeHomeText(item?.value, 40);
 
               if (!value) {
@@ -804,20 +913,26 @@ exports.home = async (_req, res, next) => {
         : [
             { label: "Active products", value: String(activeCount || 0) },
             { label: "Collections", value: String((collections || []).length || 0) },
-            { label: "Brands", value: String((allBrands || []).filter(Boolean).length || 0) },
+            {
+              label: "Brands",
+              value: String((allBrands || []).filter(Boolean).length || 0),
+            },
           ];
 
     const shopByPriceItems =
       Array.isArray(priceCfg?.items) && priceCfg.items.length
         ? priceCfg.items.slice(0, 3).map((item, index) => ({
             id: sanitizeHomeText(item?.id, 60) || `price-${index + 1}`,
-            label: sanitizeHomeText(item?.label, 80) || `Price range ${index + 1}`,
+            label:
+              sanitizeHomeText(item?.label, 80) || `Price range ${index + 1}`,
             href:
               sanitizeHomeUrl(item?.href) ||
               [
                 `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}`,
                 `/shop?priceMin=${encodeURIComponent(String(priceMid || 0))}`,
-                `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}&inStock=true`,
+                `/shop?priceMax=${encodeURIComponent(
+                  String(priceMid || 0)
+                )}&inStock=true`,
               ][index] ||
               "/shop",
           }))
@@ -835,7 +950,9 @@ exports.home = async (_req, res, next) => {
             {
               id: "in-stock-value",
               label: "In stock deals",
-              href: `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}&inStock=true`,
+              href: `/shop?priceMax=${encodeURIComponent(
+                String(priceMid || 0)
+              )}&inStock=true`,
             },
           ];
 
@@ -844,7 +961,8 @@ exports.home = async (_req, res, next) => {
       : null;
 
     const flashCampaign =
-      activeFlashCampaign && (flashCampaignStatus === "active" || flashCampaignStatus === "scheduled")
+      activeFlashCampaign &&
+      (flashCampaignStatus === "active" || flashCampaignStatus === "scheduled")
         ? {
             _id: activeFlashCampaign._id,
             name: activeFlashCampaign.name || "Flash Sale",
@@ -860,7 +978,8 @@ exports.home = async (_req, res, next) => {
       ok: true,
       home: {
         hero: {
-          eyebrow: sanitizeHomeText(heroCfg?.eyebrow, 40) || "New arrivals",
+          eyebrow:
+            sanitizeHomeText(heroCfg?.eyebrow, 40) || "New arrivals",
           title:
             sanitizeHomeText(heroCfg?.title, 140) ||
             "Elevate your everyday wardrobe with refined essentials",
@@ -869,20 +988,26 @@ exports.home = async (_req, res, next) => {
             "Discover premium pieces curated from your live catalog, designed for comfort, confidence, and modern style.",
           image: sanitizeHomeUrl(heroCfg?.image) || fallbackHeroImage,
           primaryCta: {
-            label: sanitizeHomeText(heroCfg?.primaryCtaLabel, 40) || "Shop collection",
+            label:
+              sanitizeHomeText(heroCfg?.primaryCtaLabel, 40) ||
+              "Shop collection",
             href:
               sanitizeHomeUrl(heroCfg?.primaryCtaHref) ||
               `/shop?category=${encodeURIComponent(safeCategory)}`,
           },
           secondaryCta: {
-            label: sanitizeHomeText(heroCfg?.secondaryCtaLabel, 40) || "Explore latest",
+            label:
+              sanitizeHomeText(heroCfg?.secondaryCtaLabel, 40) ||
+              "Explore latest",
             href: sanitizeHomeUrl(heroCfg?.secondaryCtaHref) || "/shop?sort=latest",
           },
           stats: heroStats,
         },
 
         collections: {
-          title: sanitizeHomeText(collectionsCfg?.title, 80) || "Explore Our Collections",
+          title:
+            sanitizeHomeText(collectionsCfg?.title, 80) ||
+            "Explore Our Collections",
           subtitle:
             sanitizeHomeText(collectionsCfg?.subtitle, 220) ||
             "Curated categories from your live catalog to help customers discover products faster.",
@@ -893,11 +1018,14 @@ exports.home = async (_req, res, next) => {
           ...buildSectionPayload(
             {
               ...trendingCfg,
-              title: sanitizeHomeText(trendingCfg?.title, 80) || "Trending Now",
+              title:
+                sanitizeHomeText(trendingCfg?.title, 80) || "Trending Now",
               subtitle:
                 sanitizeHomeText(trendingCfg?.subtitle, 220) ||
                 "Fresh picks from your most recently updated in-stock catalog.",
-              ctaLabel: sanitizeHomeText(trendingCfg?.ctaLabel, 40) || "View all products",
+              ctaLabel:
+                sanitizeHomeText(trendingCfg?.ctaLabel, 40) ||
+                "View all products",
               ctaHref: sanitizeHomeUrl(trendingCfg?.ctaHref) || "/shop",
             },
             trendingBehavior,
@@ -909,15 +1037,22 @@ exports.home = async (_req, res, next) => {
           ...buildSectionPayload(
             {
               ...bestCfg,
-              title: sanitizeHomeText(bestCfg?.title, 80) || "Best Sellers",
-              subtitle:
-                sanitizeHomeText(bestCfg?.subtitle, 220) ||
-                "Top-selling products ranked from completed commerce activity.",
-              ctaLabel: sanitizeHomeText(bestCfg?.ctaLabel, 40) || "Browse best picks",
+              title:
+                sanitizeHomeText(bestCfg?.title, 80) || "Best Sellers",
+              subtitle: bestSellerFallbackApplied
+                ? "A curated storefront mix from the newest and most relevant active products."
+                : sanitizeHomeText(bestCfg?.subtitle, 220) ||
+                  "Top-selling products ranked from completed commerce activity.",
+              ctaLabel:
+                sanitizeHomeText(bestCfg?.ctaLabel, 40) ||
+                "Browse best picks",
               ctaHref: sanitizeHomeUrl(bestCfg?.ctaHref) || "/shop?sort=latest",
             },
             bestBehavior,
-            bestSellerProducts
+            bestSellerProducts,
+            {
+              fallbackApplied: bestSellerFallbackApplied,
+            }
           ),
         },
 
@@ -925,14 +1060,18 @@ exports.home = async (_req, res, next) => {
           ...buildSectionPayload(
             {
               ...flashCfg,
-              title: sanitizeHomeText(flashCfg?.title, 80) || "Flash Sale",
+              title:
+                sanitizeHomeText(flashCfg?.title, 80) || "Flash Sale",
               subtitle:
                 sanitizeHomeText(flashCfg?.subtitle, 220) ||
                 "Live discounted products with real compare-at pricing from your active catalog.",
-              ctaLabel: sanitizeHomeText(flashCfg?.ctaLabel, 40) || "Shop deals",
+              ctaLabel:
+                sanitizeHomeText(flashCfg?.ctaLabel, 40) || "Shop deals",
               ctaHref:
                 sanitizeHomeUrl(flashCfg?.ctaHref) ||
-                `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}&inStock=true`,
+                `/shop?priceMax=${encodeURIComponent(
+                  String(priceMid || 0)
+                )}&inStock=true`,
             },
             flashBehavior,
             flashSaleProducts,
@@ -945,13 +1084,15 @@ exports.home = async (_req, res, next) => {
         },
 
         whyChooseUs: {
-          title: sanitizeHomeText(whyCfg?.title, 80) || "Why Choose Us",
+          title:
+            sanitizeHomeText(whyCfg?.title, 80) || "Why Choose Us",
           items:
             Array.isArray(whyCfg?.items) && whyCfg.items.length
               ? whyCfg.items.slice(0, 6).map((item, index) => ({
                   id: sanitizeHomeText(item?.id, 60) || `why-${index + 1}`,
                   title: sanitizeHomeText(item?.title, 80) || "Feature",
-                  description: sanitizeHomeText(item?.description, 220) || "",
+                  description:
+                    sanitizeHomeText(item?.description, 220) || "",
                 }))
               : [
                   {
@@ -976,9 +1117,12 @@ exports.home = async (_req, res, next) => {
         },
 
         testimonials: {
-          title: sanitizeHomeText(testimonialsCfg?.title, 80) || "What Customers Say",
+          title:
+            sanitizeHomeText(testimonialsCfg?.title, 80) ||
+            "What Customers Say",
           items:
-            Array.isArray(testimonialsCfg?.items) && testimonialsCfg.items.length
+            Array.isArray(testimonialsCfg?.items) &&
+            testimonialsCfg.items.length
               ? testimonialsCfg.items.slice(0, 10).map((item, index) => ({
                   id: sanitizeHomeText(item?.id, 60) || `t-${index + 1}`,
                   name: sanitizeHomeText(item?.name, 60) || "Customer",
@@ -1011,7 +1155,8 @@ exports.home = async (_req, res, next) => {
         },
 
         seasonalBanner: {
-          eyebrow: sanitizeHomeText(seasonalCfg?.eyebrow, 40) || "Seasonal edit",
+          eyebrow:
+            sanitizeHomeText(seasonalCfg?.eyebrow, 40) || "Seasonal edit",
           title:
             sanitizeHomeText(seasonalCfg?.title, 120) ||
             "Refresh your wardrobe with the latest curated arrivals",
@@ -1020,13 +1165,16 @@ exports.home = async (_req, res, next) => {
             "Explore timely essentials and standout pieces crafted to keep your catalog feeling current.",
           image: sanitizeHomeUrl(seasonalCfg?.image) || fallbackSeasonalImage,
           cta: {
-            label: sanitizeHomeText(seasonalCfg?.ctaLabel, 40) || "Shop seasonal picks",
+            label:
+              sanitizeHomeText(seasonalCfg?.ctaLabel, 40) ||
+              "Shop seasonal picks",
             href: sanitizeHomeUrl(seasonalCfg?.ctaHref) || "/shop?sort=latest",
           },
         },
 
         shopByPrice: {
-          title: sanitizeHomeText(priceCfg?.title, 80) || "Shop by Price",
+          title:
+            sanitizeHomeText(priceCfg?.title, 80) || "Shop by Price",
           subtitle:
             sanitizeHomeText(priceCfg?.subtitle, 220) ||
             "Budget-aware shopping paths that help customers discover the right products faster.",
@@ -1039,7 +1187,8 @@ exports.home = async (_req, res, next) => {
         },
 
         shopByStyle: {
-          title: sanitizeHomeText(styleCfg?.title, 80) || "Shop by Style",
+          title:
+            sanitizeHomeText(styleCfg?.title, 80) || "Shop by Style",
           subtitle:
             sanitizeHomeText(styleCfg?.subtitle, 220) ||
             "Fast discovery paths based on category and brand-led shopping intent.",
@@ -1047,7 +1196,8 @@ exports.home = async (_req, res, next) => {
         },
 
         instagramFeed: {
-          title: sanitizeHomeText(feedCfg?.title, 80) || "Inspired by the Feed",
+          title:
+            sanitizeHomeText(feedCfg?.title, 80) || "Inspired by the Feed",
           subtitle:
             sanitizeHomeText(feedCfg?.subtitle, 220) ||
             "Editorial-style product inspiration built from your live catalog.",
@@ -1055,29 +1205,37 @@ exports.home = async (_req, res, next) => {
         },
 
         brandStory: {
-          eyebrow: sanitizeHomeText(brandStoryCfg?.eyebrow, 40) || "Our story",
+          eyebrow:
+            sanitizeHomeText(brandStoryCfg?.eyebrow, 40) || "Our story",
           title:
             sanitizeHomeText(brandStoryCfg?.title, 140) ||
             "Built for a cleaner, smarter modern shopping experience",
           description:
             sanitizeHomeText(brandStoryCfg?.description, 320) ||
             "This storefront blends structured catalog data, strong merchandising foundations, and scalable customer journeys to create a more premium digital retail experience.",
-          image: sanitizeHomeUrl(brandStoryCfg?.image) || fallbackBrandStoryImage,
+          image:
+            sanitizeHomeUrl(brandStoryCfg?.image) || fallbackBrandStoryImage,
           cta: {
-            label: sanitizeHomeText(brandStoryCfg?.ctaLabel, 40) || "Explore the catalog",
+            label:
+              sanitizeHomeText(brandStoryCfg?.ctaLabel, 40) ||
+              "Explore the catalog",
             href: sanitizeHomeUrl(brandStoryCfg?.ctaHref) || "/shop",
           },
         },
 
         newsletter: {
-          title: sanitizeHomeText(newsletterCfg?.title, 80) || "Join our newsletter",
+          title:
+            sanitizeHomeText(newsletterCfg?.title, 80) ||
+            "Join our newsletter",
           description:
             sanitizeHomeText(newsletterCfg?.description, 220) ||
             "Get product highlights, new arrivals, and curated seasonal picks delivered to your inbox.",
           placeholder:
-            sanitizeHomeText(newsletterCfg?.placeholder, 80) || "Enter your email",
+            sanitizeHomeText(newsletterCfg?.placeholder, 80) ||
+            "Enter your email",
           buttonLabel:
-            sanitizeHomeText(newsletterCfg?.buttonLabel, 40) || "Subscribe",
+            sanitizeHomeText(newsletterCfg?.buttonLabel, 40) ||
+            "Subscribe",
         },
       },
     });
@@ -1090,7 +1248,10 @@ exports.home = async (_req, res, next) => {
 exports.listAdmin = async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || "20", 10)));
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(req.query.limit || "20", 10))
+    );
     const skip = (page - 1) * limit;
 
     const q = String(req.query.q || "").trim();
@@ -1111,7 +1272,10 @@ exports.listAdmin = async (req, res, next) => {
       filter.stock = { $lte: 0 };
     } else if (stockFilter === "low") {
       filter.$expr = {
-        $and: [{ $gt: ["$stock", 0] }, { $lte: ["$stock", "$lowStockThreshold"] }],
+        $and: [
+          { $gt: ["$stock", 0] },
+          { $lte: ["$stock", "$lowStockThreshold"] },
+        ],
       };
     } else if (stockFilter === "ok") {
       filter.$expr = { $gt: ["$stock", "$lowStockThreshold"] };
@@ -1171,7 +1335,11 @@ exports.listAdmin = async (req, res, next) => {
 
     res.json({
       ok: true,
-      products: items,
+      products: items.map((item) => ({
+        ...item,
+        images: normalizeImages(item?.images, req),
+        image: pickPrimaryImageUrl(item, req),
+      })),
       total,
       page,
       pages: Math.max(1, Math.ceil(total / limit)),
@@ -1191,7 +1359,11 @@ exports.adminCategories = async (req, res, next) => {
     const match = { category: { $nin: [null, ""] } };
 
     if (q) {
-      match.category = { $nin: [null, ""], $regex: escapeRegex(q), $options: "i" };
+      match.category = {
+        $nin: [null, ""],
+        $regex: escapeRegex(q),
+        $options: "i",
+      };
     }
 
     const rows = await Product.aggregate([
@@ -1207,7 +1379,12 @@ exports.adminCategories = async (req, res, next) => {
           lowStockCount: {
             $sum: {
               $cond: [
-                { $and: [{ $gt: ["$stock", 0] }, { $lte: ["$stock", "$lowStockThreshold"] }] },
+                {
+                  $and: [
+                    { $gt: ["$stock", 0] },
+                    { $lte: ["$stock", "$lowStockThreshold"] },
+                  ],
+                },
                 1,
                 0,
               ],
@@ -1332,7 +1509,12 @@ exports.inventorySummary = async (req, res, next) => {
           lowStock: {
             $sum: {
               $cond: [
-                { $and: [{ $gt: ["$stock", 0] }, { $lte: ["$stock", "$lowStockThreshold"] }] },
+                {
+                  $and: [
+                    { $gt: ["$stock", 0] },
+                    { $lte: ["$stock", "$lowStockThreshold"] },
+                  ],
+                },
                 1,
                 0,
               ],
@@ -1382,7 +1564,9 @@ exports.bulkStockUpdate = async (req, res, next) => {
 
     if (req.body?.stock != null) {
       const n = Number(req.body.stock);
-      if (!Number.isFinite(n) || n < 0) throw new ApiError(400, "Invalid stock");
+      if (!Number.isFinite(n) || n < 0) {
+        throw new ApiError(400, "Invalid stock");
+      }
       update.stock = Math.max(0, n);
     }
 
@@ -1407,7 +1591,10 @@ exports.bulkStockUpdate = async (req, res, next) => {
 
     update.updatedAt = new Date();
 
-    const r = await Product.updateMany({ _id: { $in: cleanIds } }, { $set: update });
+    const r = await Product.updateMany(
+      { _id: { $in: cleanIds } },
+      { $set: update }
+    );
 
     const afterSample = await Product.find({ _id: { $in: cleanIds } })
       .select(
@@ -1420,9 +1607,12 @@ exports.bulkStockUpdate = async (req, res, next) => {
       action: "inventory.bulkUpdate",
       entity: "product",
       entityId: null,
-      before: { sample: beforeSample.map(pickProductSnapshot), idsCount: cleanIds.length },
+      before: {
+        sample: beforeSample.map((p) => pickProductSnapshot(p, req)),
+        idsCount: cleanIds.length,
+      },
       after: {
-        sample: afterSample.map(pickProductSnapshot),
+        sample: afterSample.map((p) => pickProductSnapshot(p, req)),
         update,
         idsCount: cleanIds.length,
         modified: r.modifiedCount ?? r.nModified ?? 0,
@@ -1462,7 +1652,7 @@ exports.getOne = async (req, res, next) => {
 
     res.json({
       ok: true,
-      product: mergePublicProduct(item),
+      product: mergePublicProduct(item, req),
     });
   } catch (e) {
     next(e);
@@ -1522,7 +1712,7 @@ exports.create = async (req, res, next) => {
       throw new ApiError(400, "Invalid lowStockThreshold");
     }
 
-    const normalizedImages = normalizeImages(images);
+    const normalizedImages = normalizeImages(images, req);
 
     const doc = await Product.create({
       title: titleStr,
@@ -1543,7 +1733,7 @@ exports.create = async (req, res, next) => {
       action: "product.create",
       entity: "product",
       entityId: doc._id,
-      after: pickProductSnapshot(doc),
+      after: pickProductSnapshot(doc, req),
       meta: {
         imagesCount: normalizedImages.length,
       },
@@ -1551,7 +1741,11 @@ exports.create = async (req, res, next) => {
 
     res.status(201).json({
       ok: true,
-      product: doc,
+      product: {
+        ...doc.toObject(),
+        images: normalizeImages(doc.images, req),
+        image: pickPrimaryImageUrl(doc, req),
+      },
     });
   } catch (e) {
     next(e);
@@ -1627,12 +1821,14 @@ exports.update = async (req, res, next) => {
     }
 
     if (body.images != null) {
-      update.images = normalizeImages(body.images);
+      update.images = normalizeImages(body.images, req);
     }
 
     if (body.isActive != null) {
       update.isActive =
-        typeof body.isActive === "boolean" ? body.isActive : parseBool(body.isActive);
+        typeof body.isActive === "boolean"
+          ? body.isActive
+          : parseBool(body.isActive);
     }
 
     if (!Object.keys(update).length) {
@@ -1653,8 +1849,8 @@ exports.update = async (req, res, next) => {
       action: "product.update",
       entity: "product",
       entityId: afterDoc._id,
-      before: pickProductSnapshot(beforeDoc),
-      after: pickProductSnapshot(afterDoc),
+      before: pickProductSnapshot(beforeDoc, req),
+      after: pickProductSnapshot(afterDoc, req),
       meta: {
         fields: Object.keys(update),
         imagesCount: Array.isArray(afterDoc.images) ? afterDoc.images.length : 0,
@@ -1663,7 +1859,11 @@ exports.update = async (req, res, next) => {
 
     res.json({
       ok: true,
-      product: afterDoc,
+      product: {
+        ...afterDoc.toObject(),
+        images: normalizeImages(afterDoc.images, req),
+        image: pickPrimaryImageUrl(afterDoc, req),
+      },
     });
   } catch (e) {
     next(e);
@@ -1691,8 +1891,8 @@ exports.remove = async (req, res, next) => {
       action: "product.deactivate",
       entity: "product",
       entityId: doc._id,
-      before: pickProductSnapshot(beforeDoc),
-      after: pickProductSnapshot(doc),
+      before: pickProductSnapshot(beforeDoc, req),
+      after: pickProductSnapshot(doc, req),
     });
 
     res.json({
@@ -1740,7 +1940,7 @@ exports.removePermanent = async (req, res, next) => {
       action: "product.deletePermanent",
       entity: "product",
       entityId: id,
-      before: pickProductSnapshot(beforeDoc),
+      before: pickProductSnapshot(beforeDoc, req),
       after: null,
       meta: {
         orderRefCount,
