@@ -11,7 +11,7 @@ const Order = require("../models/Order");
  * ------------------------------------------------------------
  * ✅ Public list: search + pagination + sorting + filters
  * ✅ Public list: excludeId / excludeIds support
- * ✅ Facets: categories/brands + counts + price range
+ * ✅ Facets: registry-aware categories + brands + price range
  * ✅ Admin list: includes inactive products + inventory filters
  * ✅ CRUD: keeps titleLower in sync
  * ✅ Admin Categories: aggregated view + rename/delete
@@ -21,6 +21,7 @@ const Order = require("../models/Order");
  * ✅ Flash sale campaign timer support from Promotion module
  * ✅ Audit logging (best-effort, never breaks flows)
  * ✅ Stable independent merchandising allocation
+ * ✅ Shop master category registry sync
  * ============================================================
  */
 
@@ -333,51 +334,81 @@ function slugify(value) {
     .replace(/^-+|-+$/g, "");
 }
 
-function buildCollections(rows = [], req) {
-  return rows.slice(0, 6).map((row, index) => ({
-    id:
-      slugify(row?._id || `collection-${index + 1}`) ||
-      `collection-${index + 1}`,
-    title: String(row?._id || "Collection").trim(),
-    count: Number(row?.count || 0),
-    image: normalizePublicMediaUrl(normalizeText(row?.image || null), req),
-    href: `/shop?category=${encodeURIComponent(
-      String(row?._id || "").trim()
-    )}`,
-  }));
+function normalizeRegistryCategories(input = []) {
+  const list = Array.isArray(input) ? input : [];
+  return list
+    .map((item) => ({
+      id: String(item?.id || "").trim(),
+      name: normalizeText(item?.name),
+      slug: normalizeText(item?.slug),
+      iconKey: normalizeText(item?.iconKey),
+      image: normalizeText(item?.image),
+      isActive: item?.isActive !== false,
+      featured: Boolean(item?.featured),
+      sortOrder: Number.isFinite(Number(item?.sortOrder))
+        ? Number(item?.sortOrder)
+        : 0,
+    }))
+    .filter((item) => item.name)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
 
-function buildStyleOptions(products = [], req) {
-  const list = Array.isArray(products) ? products : [];
+async function getShopCategoryRegistry() {
+  const shopDoc = await PageConfig.findOne({ key: "shop" }).lean();
+  return normalizeRegistryCategories(shopDoc?.data?.categories || []);
+}
 
-  const categoryMap = new Map();
+function buildCollections(rows = [], req, registry = []) {
+  const countMap = new Map(
+    (Array.isArray(rows) ? rows : []).map((row) => [
+      String(row?._id || "").trim().toLowerCase(),
+      row,
+    ])
+  );
+
+  return registry
+    .filter((item) => item.isActive !== false)
+    .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0))
+    .slice(0, 6)
+    .map((item, index) => {
+      const row = countMap.get(String(item.name || "").toLowerCase()) || null;
+
+      return {
+        id: item.slug || item.id || `collection-${index + 1}`,
+        title: item.name,
+        count: Number(row?.count || 0),
+        image: normalizePublicMediaUrl(item.image || row?.image || null, req),
+        href: `/shop?category=${encodeURIComponent(
+          String(item.name || "").trim()
+        )}`,
+      };
+    });
+}
+
+function buildStyleOptions(products = [], req, registry = []) {
+  const list = Array.isArray(products) ? products : [];
+  const styles = [];
+
+  for (const item of registry.filter((x) => x.isActive !== false).slice(0, 4)) {
+    styles.push({
+      id: `category-${slugify(item.name)}`,
+      label: item.name,
+      href: `/shop?category=${encodeURIComponent(item.name)}`,
+      type: "category",
+      image: item.image ? normalizePublicMediaUrl(item.image, req) : null,
+      img: item.image ? normalizePublicMediaUrl(item.image, req) : null,
+    });
+  }
+
   const brandMap = new Map();
 
   for (const product of list) {
-    const category = normalizeText(product?.category);
     const brand = normalizeText(product?.brand);
     const image = pickPrimaryImageUrl(product, req);
-
-    if (category && !categoryMap.has(category)) {
-      categoryMap.set(category, image || null);
-    }
 
     if (brand && !brandMap.has(brand)) {
       brandMap.set(brand, image || null);
     }
-  }
-
-  const styles = [];
-
-  for (const [name, image] of Array.from(categoryMap.entries()).slice(0, 4)) {
-    styles.push({
-      id: `category-${slugify(name)}`,
-      label: name,
-      href: `/shop?category=${encodeURIComponent(name)}`,
-      type: "category",
-      image: image || null,
-      img: image || null,
-    });
   }
 
   for (const [name, image] of Array.from(brandMap.entries()).slice(0, 4)) {
@@ -593,8 +624,8 @@ exports.list = async (req, res, next) => {
       req.query.sort === "price_asc"
         ? { price: 1, updatedAt: -1, _id: -1 }
         : req.query.sort === "price_desc"
-          ? { price: -1, updatedAt: -1, _id: -1 }
-          : { updatedAt: -1, createdAt: -1, _id: -1 };
+        ? { price: -1, updatedAt: -1, _id: -1 }
+        : { updatedAt: -1, createdAt: -1, _id: -1 };
 
     const [items, total] = await Promise.all([
       Product.find(filter).sort(sort).skip(skip).limit(limit).lean(),
@@ -622,7 +653,8 @@ exports.facets = async (req, res, next) => {
   try {
     const match = { isActive: true };
 
-    const [categoryRows, brandRows, priceAgg] = await Promise.all([
+    const [registry, categoryRows, brandRows, priceAgg] = await Promise.all([
+      getShopCategoryRegistry(),
       Product.aggregate([
         { $match: { ...match, category: { $nin: [null, ""] } } },
         { $group: { _id: "$category", count: { $sum: 1 } } },
@@ -634,10 +666,24 @@ exports.facets = async (req, res, next) => {
       Product.aggregate([
         { $match: match },
         {
-          $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } },
+          $group: {
+            _id: null,
+            min: { $min: "$price" },
+            max: { $max: "$price" },
+          },
         },
       ]),
     ]);
+
+    const registryMap = new Map(
+      registry.map((item) => [String(item.name || "").toLowerCase(), item])
+    );
+
+    const categories = normalizeFacetRows(categoryRows).filter((row) => {
+      const key = String(row.value || "").toLowerCase();
+      const found = registryMap.get(key);
+      return found && found.isActive !== false;
+    });
 
     const min = priceAgg?.[0]?.min ?? 0;
     const max = priceAgg?.[0]?.max ?? 0;
@@ -645,7 +691,7 @@ exports.facets = async (req, res, next) => {
     res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
     res.json({
       ok: true,
-      categories: normalizeFacetRows(categoryRows),
+      categories,
       brands: normalizeFacetRows(brandRows),
       price: { min, max },
     });
@@ -663,6 +709,7 @@ exports.home = async (req, res, next) => {
 
     const [
       homeCfgDoc,
+      shopCfgDoc,
       latestProducts,
       featuredProducts,
       collectionAgg,
@@ -675,6 +722,7 @@ exports.home = async (req, res, next) => {
       activeFlashCampaign,
     ] = await Promise.all([
       PageConfig.findOne({ key: "home" }).lean(),
+      PageConfig.findOne({ key: "shop" }).lean(),
 
       Product.find(inStockMatch)
         .sort({ updatedAt: -1, createdAt: -1, _id: -1 })
@@ -697,7 +745,7 @@ exports.home = async (req, res, next) => {
         },
         { $match: { _id: { $nin: [null, ""] } } },
         { $sort: { count: -1, _id: 1 } },
-        { $limit: 6 },
+        { $limit: 40 },
       ]),
 
       Product.distinct("brand", {
@@ -712,7 +760,11 @@ exports.home = async (req, res, next) => {
       Product.aggregate([
         { $match: activeMatch },
         {
-          $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } },
+          $group: {
+            _id: null,
+            min: { $min: "$price" },
+            max: { $max: "$price" },
+          },
         },
       ]),
 
@@ -754,6 +806,9 @@ exports.home = async (req, res, next) => {
     ]);
 
     const homeCfg = homeCfgDoc?.data || {};
+    const shopRegistry = normalizeRegistryCategories(
+      shopCfgDoc?.data?.categories || []
+    );
 
     const heroCfg = homeCfg?.hero || {};
     const collectionsCfg = homeCfg?.collections || {};
@@ -857,10 +912,11 @@ exports.home = async (req, res, next) => {
     const priceMax = Number(priceAgg?.[0]?.max ?? 0);
     const priceMid = Math.max(priceMin, Math.round((priceMin + priceMax) / 2));
 
-    const collections = buildCollections(collectionAgg, req);
+    const collections = buildCollections(collectionAgg, req, shopRegistry);
     const shopByStyle = buildStyleOptions(
       [...latestProducts, ...featuredProducts],
-      req
+      req,
+      shopRegistry
     );
     const instagramFeed = buildInstagramFeed(
       [...latestProducts, ...featuredProducts],
@@ -868,6 +924,7 @@ exports.home = async (req, res, next) => {
     );
 
     const safeCategory =
+      normalizeText(shopRegistry?.[0]?.name) ||
       normalizeText(collectionAgg?.[0]?._id) ||
       normalizeText(allCategories?.[0]) ||
       "Collection";
@@ -1317,16 +1374,16 @@ exports.listAdmin = async (req, res, next) => {
       req.query.sort === "price_asc"
         ? { price: 1, _id: -1 }
         : req.query.sort === "price_desc"
-          ? { price: -1, _id: -1 }
-          : req.query.sort === "stock_asc"
-            ? { stock: 1, updatedAt: -1, _id: -1 }
-            : req.query.sort === "stock_desc"
-              ? { stock: -1, updatedAt: -1, _id: -1 }
-              : req.query.sort === "updated_asc"
-                ? { updatedAt: 1, _id: -1 }
-                : req.query.sort === "updated_desc"
-                  ? { updatedAt: -1, _id: -1 }
-                  : { createdAt: -1, _id: -1 };
+        ? { price: -1, _id: -1 }
+        : req.query.sort === "stock_asc"
+        ? { stock: 1, updatedAt: -1, _id: -1 }
+        : req.query.sort === "stock_desc"
+        ? { stock: -1, updatedAt: -1, _id: -1 }
+        : req.query.sort === "updated_asc"
+        ? { updatedAt: 1, _id: -1 }
+        : req.query.sort === "updated_desc"
+        ? { updatedAt: -1, _id: -1 }
+        : { createdAt: -1, _id: -1 };
 
     const [items, total] = await Promise.all([
       Product.find(filter).sort(sort).skip(skip).limit(limit).lean(),

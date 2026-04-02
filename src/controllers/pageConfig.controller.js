@@ -2,18 +2,6 @@ const PageConfig = require("../models/PageConfig");
 const AdminAuditLog = require("../models/AdminAuditLog");
 const ApiError = require("../utils/apiError");
 
-/**
- * Public: GET /page-config/shop
- * Admin : PUT /page-config/shop
- *
- * Public: GET /page-config/home
- * Admin : PUT /page-config/home
- *
- * Public: GET /page-config/admin-settings/public
- * Admin : GET /page-config/admin-settings
- * Admin : PUT /page-config/admin-settings
- */
-
 const ALLOWED_ICON_KEYS = new Set([
   "ShoppingBag",
   "Shirt",
@@ -22,9 +10,19 @@ const ALLOWED_ICON_KEYS = new Set([
   "Baby",
   "Gift",
 ]);
+
 const ALLOWED_SHOP_SORTS = new Set(["newest", "priceLow", "priceHigh"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 const HEX_COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 function defaultShopConfig() {
   return {
@@ -67,12 +65,66 @@ function defaultShopConfig() {
     ],
 
     categories: [
-      { name: "Men", iconKey: "Shirt" },
-      { name: "Women", iconKey: "ShoppingBag" },
-      { name: "Accessories", iconKey: "Watch" },
-      { name: "Jewelry", iconKey: "Gem" },
-      { name: "Kids", iconKey: "Baby" },
-      { name: "Gifts", iconKey: "Gift" },
+      {
+        id: "men",
+        name: "Men",
+        slug: "men",
+        iconKey: "Shirt",
+        image: "",
+        isActive: true,
+        featured: true,
+        sortOrder: 1,
+      },
+      {
+        id: "women",
+        name: "Women",
+        slug: "women",
+        iconKey: "ShoppingBag",
+        image: "",
+        isActive: true,
+        featured: true,
+        sortOrder: 2,
+      },
+      {
+        id: "accessories",
+        name: "Accessories",
+        slug: "accessories",
+        iconKey: "Watch",
+        image: "",
+        isActive: true,
+        featured: true,
+        sortOrder: 3,
+      },
+      {
+        id: "jewelry",
+        name: "Jewelry",
+        slug: "jewelry",
+        iconKey: "Gem",
+        image: "",
+        isActive: true,
+        featured: false,
+        sortOrder: 4,
+      },
+      {
+        id: "kids",
+        name: "Kids",
+        slug: "kids",
+        iconKey: "Baby",
+        image: "",
+        isActive: true,
+        featured: false,
+        sortOrder: 5,
+      },
+      {
+        id: "gifts",
+        name: "Gifts",
+        slug: "gifts",
+        iconKey: "Gift",
+        image: "",
+        isActive: true,
+        featured: false,
+        sortOrder: 6,
+      },
     ],
 
     brands: [],
@@ -248,7 +300,6 @@ function defaultHomeConfig() {
   };
 }
 
-/** Enterprise default admin settings */
 function defaultAdminSettings() {
   return {
     store: {
@@ -423,13 +474,7 @@ function normalizeMerchandisingSection(input, base, options = {}) {
     base.maxItems || fallbackMaxItems
   );
 
-  const minItemsRaw = clampInt(
-    input?.minItems,
-    0,
-    12,
-    base.minItems || 1
-  );
-
+  const minItemsRaw = clampInt(input?.minItems, 0, 12, base.minItems || 1);
   const minItems = Math.min(minItemsRaw, maxItems);
 
   return {
@@ -480,7 +525,6 @@ function normalizeShopBadges(input, defaults = []) {
         : normalizeSpaces(item?.label, 40);
 
     if (!label) continue;
-
     const key = label.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -514,6 +558,61 @@ function normalizeShopCollections(input, defaults = []) {
     .filter((item) => item.title);
 
   return mapped.length ? mapped : defaults;
+}
+
+function normalizeCategoryItem(raw, index = 0) {
+  const name = normalizeSpaces(raw?.name, 40);
+  if (!name) return null;
+
+  const iconKey = normalizeSpaces(raw?.iconKey, 30);
+  const safeIconKey = ALLOWED_ICON_KEYS.has(iconKey) ? iconKey : "ShoppingBag";
+
+  const slug = sanitizeString(raw?.slug, 60) || slugify(name);
+  const id = sanitizeString(raw?.id, 60) || slug || `category-${index + 1}`;
+
+  return {
+    id,
+    name,
+    slug: slug || slugify(name) || `category-${index + 1}`,
+    iconKey: safeIconKey,
+    image: normalizeUrl(raw?.image),
+    isActive: raw?.isActive !== false,
+    featured:
+      raw?.featured === true ||
+      raw?.featured === "true" ||
+      raw?.featured === 1 ||
+      raw?.featured === "1",
+    sortOrder: clampInt(raw?.sortOrder, 0, 999, index + 1),
+  };
+}
+
+function normalizeShopCategories(input, defaults = []) {
+  const list = Array.isArray(input) ? input : [];
+  const out = [];
+  const seenNames = new Set();
+  const seenIds = new Set();
+
+  for (let i = 0; i < list.length; i += 1) {
+    const item = normalizeCategoryItem(list[i], i);
+    if (!item) continue;
+
+    const nameKey = item.name.toLowerCase();
+    const idKey = item.id.toLowerCase();
+    if (seenNames.has(nameKey) || seenIds.has(idKey)) continue;
+
+    seenNames.add(nameKey);
+    seenIds.add(idKey);
+    out.push(item);
+  }
+
+  const finalList = out.length ? out : defaults;
+  return finalList
+    .slice(0, 40)
+    .sort((a, b) => {
+      const byOrder = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
+      if (byOrder !== 0) return byOrder;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
 }
 
 function isValidObjectIdString(id) {
@@ -551,7 +650,7 @@ async function logConfigAction(req, payload) {
       },
     });
   } catch {
-    // ignore audit logging failure
+    // ignore audit failure
   }
 }
 
@@ -569,26 +668,7 @@ function validateShopPayload(body) {
   const emptyStateTitle = sanitizeString(body?.emptyStateTitle, 80);
   const emptyStateSubtitle = sanitizeString(body?.emptyStateSubtitle, 220);
 
-  const categoriesIn = Array.isArray(body?.categories) ? body.categories : [];
-  const categories = categoriesIn
-    .map((c) => {
-      const name = normalizeSpaces(c?.name, 40);
-      const iconKey = normalizeSpaces(c?.iconKey, 30);
-      if (!name) return null;
-      if (iconKey && !ALLOWED_ICON_KEYS.has(iconKey)) return null;
-      return { name, iconKey: iconKey || "ShoppingBag" };
-    })
-    .filter(Boolean)
-    .slice(0, 40);
-
-  const seen = new Set();
-  const categoriesDeduped = [];
-  for (const c of categories) {
-    const key = c.name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    categoriesDeduped.push(c);
-  }
+  const categories = normalizeShopCategories(body?.categories, defaults.categories);
 
   const brandsIn = Array.isArray(body?.brands) ? body.brands : [];
   const brands = brandsIn
@@ -604,7 +684,6 @@ function validateShopPayload(body) {
       : defaults.priceMax;
 
   const defaultSort = normalizeShopSort(body?.defaultSort, defaults.defaultSort);
-
   const trustBadges = normalizeShopBadges(body?.trustBadges, defaults.trustBadges);
   const featuredCollections = normalizeShopCollections(
     body?.featuredCollections,
@@ -626,8 +705,7 @@ function validateShopPayload(body) {
 
     trustBadges,
     featuredCollections,
-
-    categories: categoriesDeduped.length ? categoriesDeduped : defaults.categories,
+    categories,
     brands: brandsDeduped,
     priceMax,
   };
@@ -885,12 +963,11 @@ function validateAdminSettingsPayload(body) {
 }
 
 async function getOrCreate(key, defaults) {
-  const doc = await PageConfig.findOneAndUpdate(
+  return PageConfig.findOneAndUpdate(
     { key },
     { $setOnInsert: { key, data: defaults, version: 1 } },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
-  return doc;
 }
 
 async function updateConfigWithVersioning(req, key, data, action) {
@@ -946,10 +1023,6 @@ async function updateConfigWithVersioning(req, key, data, action) {
   return doc;
 }
 
-/** ==========================
- * SHOP CONFIG
- * ========================== */
-
 exports.getShopPublic = async (req, res, next) => {
   try {
     const doc = await getOrCreate("shop", defaultShopConfig());
@@ -987,10 +1060,6 @@ exports.upsertShop = async (req, res, next) => {
     next(e);
   }
 };
-
-/** ==========================
- * HOME CONFIG
- * ========================== */
 
 exports.getHomePublic = async (req, res, next) => {
   try {
@@ -1030,10 +1099,6 @@ exports.upsertHome = async (req, res, next) => {
   }
 };
 
-/** ============================================================
- * ADMIN SETTINGS
- * ============================================================ */
-
 exports.getAdminSettingsPublic = async (req, res, next) => {
   try {
     const doc = await getOrCreate("admin_settings", defaultAdminSettings());
@@ -1066,6 +1131,7 @@ exports.getAdminSettingsPublic = async (req, res, next) => {
 exports.getAdminSettings = async (req, res, next) => {
   try {
     const doc = await getOrCreate("admin_settings", defaultAdminSettings());
+
     res.set("Cache-Control", "no-store");
     res.json({
       key: doc.key,

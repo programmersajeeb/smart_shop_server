@@ -20,6 +20,11 @@ const groups = [
     items: ["products:read", "products:write"],
   },
   {
+    name: "Newsletter",
+    description: "Newsletter subscriber access and management operations.",
+    items: ["newsletter:read", "newsletter:write"],
+  },
+  {
     name: "Audit",
     description: "Audit log and compliance visibility.",
     items: ["audit:read"],
@@ -39,6 +44,7 @@ const dependencyMap = {
   "users:write": ["users:read"],
   "orders:write": ["orders:read"],
   "products:write": ["products:read"],
+  "newsletter:write": ["newsletter:read"],
   "settings:write": ["settings:read"],
 };
 
@@ -47,6 +53,7 @@ const templates = {
   "User Manager": ["admin:access", "users:read", "users:write"],
   "Order Manager": ["admin:access", "orders:read", "orders:write"],
   "Catalog Manager": ["admin:access", "products:read", "products:write"],
+  "Newsletter Manager": ["admin:access", "newsletter:read", "newsletter:write"],
   Auditor: ["admin:access", "audit:read"],
   "Support Staff": ["admin:access", "users:read", "orders:read"],
   "Read Only Admin": [
@@ -54,6 +61,7 @@ const templates = {
     "users:read",
     "orders:read",
     "products:read",
+    "newsletter:read",
     "settings:read",
     "audit:read",
   ],
@@ -90,6 +98,8 @@ const rolePresets = {
       "orders:write",
       "products:read",
       "products:write",
+      "newsletter:read",
+      "newsletter:write",
       "audit:read",
     ],
   },
@@ -103,6 +113,8 @@ const rolePresets = {
       "orders:write",
       "products:read",
       "products:write",
+      "newsletter:read",
+      "newsletter:write",
       "settings:read",
       "audit:read",
     ],

@@ -57,6 +57,7 @@ const PERMISSION_DEPENDENCIES = {
   "users:write": ["users:read"],
   "orders:write": ["orders:read"],
   "products:write": ["products:read"],
+  "newsletter:write": ["newsletter:read"],
   "settings:write": ["settings:read"],
 };
 

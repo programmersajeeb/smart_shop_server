@@ -5,11 +5,17 @@ const initFirebase = require("../config/firebase");
 const ApiError = require("../utils/apiError");
 const { openUploadStream } = require("../services/gridfs.service");
 
+function normalizeText(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
 function safeFilename(name) {
   return String(name || "")
     .trim()
     .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/-+/g, "-");
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 async function removeLocalFile(filePath) {
@@ -30,8 +36,65 @@ function getUploadDir() {
   return path.resolve(process.cwd(), process.env.UPLOAD_DIR || "uploads");
 }
 
-function buildMediaUrl(fileId) {
-  return `/api/v1/media/${fileId}`;
+function getBaseUrlFromReq(req) {
+  const envBase =
+    normalizeText(process.env.PUBLIC_API_BASE_URL) ||
+    normalizeText(process.env.APP_BASE_URL) ||
+    normalizeText(process.env.API_BASE_URL);
+
+  if (envBase) return envBase.replace(/\/+$/, "");
+
+  const forwardedProto = normalizeText(req?.headers?.["x-forwarded-proto"]);
+  const forwardedHost = normalizeText(req?.headers?.["x-forwarded-host"]);
+  const host =
+    forwardedHost ||
+    normalizeText(req?.get?.("host")) ||
+    normalizeText(req?.headers?.host);
+  const proto =
+    forwardedProto || (req?.protocol === "https" ? "https" : "http");
+
+  if (!host) return "";
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
+function buildMediaUrl(req, fileId) {
+  const base = getBaseUrlFromReq(req);
+  const relative = `/api/v1/media/${fileId}`;
+  return base ? `${base}${relative}` : relative;
+}
+
+function buildStandardResponse({
+  req,
+  storage,
+  fileId = null,
+  filename = null,
+  originalName = null,
+  originalMimetype = null,
+  originalSize = 0,
+  mimetype = null,
+  size = 0,
+  width = null,
+  height = null,
+  format = null,
+  url = null,
+  path: storagePath = null,
+}) {
+  return {
+    ok: true,
+    storage,
+    fileId: fileId ? String(fileId) : null,
+    filename: filename || null,
+    originalName: originalName || null,
+    originalMimetype: originalMimetype || null,
+    originalSize: Number(originalSize || 0) || 0,
+    mimetype: mimetype || null,
+    size: Number(size || 0) || 0,
+    width: Number(width || 0) || null,
+    height: Number(height || 0) || null,
+    format: format || null,
+    url: url || (fileId ? buildMediaUrl(req, fileId) : null),
+    path: storagePath || null,
+  };
 }
 
 async function optimizeImageToWebp(inputPath, originalName) {
@@ -39,7 +102,10 @@ async function optimizeImageToWebp(inputPath, originalName) {
   await ensureDir(uploadDir);
 
   const baseName = safeFilename(
-    path.basename(String(originalName || "image"), path.extname(String(originalName || "")))
+    path.basename(
+      String(originalName || "image"),
+      path.extname(String(originalName || ""))
+    )
   );
 
   const outputFilename = `${Date.now()}-${baseName || "image"}-optimized.webp`;
@@ -48,23 +114,22 @@ async function optimizeImageToWebp(inputPath, originalName) {
   const image = sharp(inputPath, { failOn: "none" });
   const metadata = await image.metadata();
 
-  const resized = sharp(inputPath, { failOn: "none" })
+  await sharp(inputPath, { failOn: "none" })
     .rotate()
     .resize({
-      width: 1600,
-      height: 1600,
+      width: 1800,
+      height: 1800,
       fit: "inside",
       withoutEnlargement: true,
     })
     .webp({
-      quality: 80,
-      effort: 4,
-    });
-
-  await resized.toFile(outputPath);
+      quality: 82,
+      effort: 5,
+    })
+    .toFile(outputPath);
 
   const optimizedStat = await fs.promises.stat(outputPath);
-  const optimizedMeta = await sharp(outputPath).metadata();
+  const optimizedMeta = await sharp(outputPath, { failOn: "none" }).metadata();
 
   return {
     outputFilename,
@@ -91,10 +156,12 @@ async function storeFileInGridFS(filePath, filename, meta = {}) {
     metadata: {
       originalName: meta.originalName || null,
       originalMimetype: meta.originalMimetype || null,
-      originalSize: meta.originalSize || 0,
-      width: meta.width || null,
-      height: meta.height || null,
+      originalSize: Number(meta.originalSize || 0) || 0,
+      width: Number(meta.width || 0) || null,
+      height: Number(meta.height || 0) || null,
       format: meta.format || null,
+      optimizedMimetype: meta.mimetype || "image/webp",
+      source: "local_optimized_upload",
     },
   });
 
@@ -133,21 +200,22 @@ exports.uploadLocal = async (req, res, next) => {
       mimetype: result.optimized.mimetype,
     });
 
-    res.json({
-      ok: true,
-      storage: "gridfs",
-      fileId: String(fileId),
-      filename: result.outputFilename,
-      originalName: file.originalname || null,
-      originalMimetype: file.mimetype || null,
-      originalSize: file.size || 0,
-      mimetype: result.optimized.mimetype,
-      size: result.optimized.size,
-      width: result.optimized.width,
-      height: result.optimized.height,
-      format: result.optimized.format,
-      url: buildMediaUrl(String(fileId)),
-    });
+    return res.status(201).json(
+      buildStandardResponse({
+        req,
+        storage: "gridfs",
+        fileId: String(fileId),
+        filename: result.outputFilename,
+        originalName: file.originalname || null,
+        originalMimetype: file.mimetype || null,
+        originalSize: file.size || 0,
+        mimetype: result.optimized.mimetype,
+        size: result.optimized.size,
+        width: result.optimized.width,
+        height: result.optimized.height,
+        format: result.optimized.format,
+      })
+    );
   } catch (e) {
     next(e);
   } finally {
@@ -186,27 +254,29 @@ exports.uploadToFirebase = async (req, res, next) => {
       public: true,
       metadata: {
         contentType: "image/webp",
-        cacheControl: "public, max-age=31536000",
+        cacheControl: "public, max-age=31536000, immutable",
       },
     });
 
     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
 
-    res.json({
-      ok: true,
-      storage: "firebase",
-      filename: result.outputFilename,
-      originalName: file.originalname || null,
-      originalMimetype: file.mimetype || null,
-      originalSize: file.size || 0,
-      mimetype: result.optimized.mimetype,
-      size: result.optimized.size,
-      width: result.optimized.width,
-      height: result.optimized.height,
-      format: result.optimized.format,
-      url: publicUrl,
-      path: destination,
-    });
+    return res.status(201).json(
+      buildStandardResponse({
+        req,
+        storage: "firebase",
+        filename: result.outputFilename,
+        originalName: file.originalname || null,
+        originalMimetype: file.mimetype || null,
+        originalSize: file.size || 0,
+        mimetype: result.optimized.mimetype,
+        size: result.optimized.size,
+        width: result.optimized.width,
+        height: result.optimized.height,
+        format: result.optimized.format,
+        url: publicUrl,
+        path: destination,
+      })
+    );
   } catch (e) {
     next(e);
   } finally {

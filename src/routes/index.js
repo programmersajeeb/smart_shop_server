@@ -12,6 +12,7 @@ router.use("/cart", require("./cart.routes"));
 router.use("/orders", require("./order.routes"));
 router.use("/promotions", require("./promotion.routes"));
 router.use("/settings", require("./settings.routes"));
+router.use("/newsletter", require("./newsletter.routes"));
 
 // Admin
 router.use("/admin-overview", require("./adminOverview.routes"));

@@ -4,7 +4,25 @@ const fs = require("fs");
 const crypto = require("crypto");
 const ApiError = require("../utils/apiError");
 
-const uploadDir = path.resolve(process.cwd(), process.env.UPLOAD_DIR || "uploads");
+const DEFAULT_MAX_FILE_SIZE = 5 * 1024 * 1024;
+const uploadDir = path.resolve(
+  process.cwd(),
+  process.env.UPLOAD_DIR || "uploads"
+);
+
+const ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
+const ALLOWED_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
+const MIME_TO_EXT = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
 
 function ensureUploadDir() {
   if (!fs.existsSync(uploadDir)) {
@@ -14,19 +32,37 @@ function ensureUploadDir() {
 
 ensureUploadDir();
 
-const ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
+function normalizeText(value) {
+  return String(value || "").trim();
+}
 
-const MIME_TO_EXT = {
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/webp": ".webp",
-};
+function getFileExtension(file) {
+  return path.extname(normalizeText(file?.originalname)).toLowerCase();
+}
+
+function getMimeType(file) {
+  return normalizeText(file?.mimetype).toLowerCase();
+}
 
 function pickExtension(file) {
-  const mime = String(file?.mimetype || "").toLowerCase().trim();
-  const originalExt = path.extname(String(file?.originalname || "")).toLowerCase().trim();
-
+  const mime = getMimeType(file);
+  const originalExt = getFileExtension(file);
   return MIME_TO_EXT[mime] || originalExt || "";
+}
+
+function isAllowedFile(file) {
+  const mime = getMimeType(file);
+  const ext = getFileExtension(file);
+
+  const mimeAllowed = ALLOWED_MIME_TYPES.has(mime);
+  const extAllowed = ALLOWED_EXTENSIONS.has(ext);
+
+  return mimeAllowed && extAllowed;
+}
+
+function getSafeFilename(file) {
+  const ext = pickExtension(file);
+  return `${Date.now()}-${crypto.randomUUID()}${ext}`;
 }
 
 const storage = multer.diskStorage({
@@ -38,11 +74,10 @@ const storage = multer.diskStorage({
       cb(err);
     }
   },
+
   filename: (_req, file, cb) => {
     try {
-      const ext = pickExtension(file);
-      const name = `${Date.now()}-${crypto.randomUUID()}${ext}`;
-      cb(null, name);
+      cb(null, getSafeFilename(file));
     } catch (err) {
       cb(err);
     }
@@ -50,23 +85,37 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (_req, file, cb) => {
-  const mime = String(file?.mimetype || "").toLowerCase().trim();
-  const ok = ALLOWED_MIME_TYPES.includes(mime);
+  if (!file) {
+    return cb(new ApiError(400, "Image file is required"), false);
+  }
 
-  if (!ok) {
-    return cb(new ApiError(400, "Only jpg/png/webp allowed"), false);
+  const mime = getMimeType(file);
+  const ext = getFileExtension(file);
+
+  if (!isAllowedFile(file)) {
+    return cb(
+      new ApiError(
+        400,
+        `Only JPG, PNG, and WEBP images are allowed. Received mime "${mime || "unknown"}" and extension "${ext || "unknown"}".`
+      ),
+      false
+    );
   }
 
   cb(null, true);
 };
 
-const maxFileSize = Number(process.env.MAX_FILE_SIZE || 5242880);
+const configuredMaxFileSize = Number(process.env.MAX_FILE_SIZE || DEFAULT_MAX_FILE_SIZE);
+const maxFileSize =
+  Number.isFinite(configuredMaxFileSize) && configuredMaxFileSize > 0
+    ? configuredMaxFileSize
+    : DEFAULT_MAX_FILE_SIZE;
 
 module.exports = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: Number.isFinite(maxFileSize) && maxFileSize > 0 ? maxFileSize : 5242880,
+    fileSize: maxFileSize,
     files: 1,
   },
 });
