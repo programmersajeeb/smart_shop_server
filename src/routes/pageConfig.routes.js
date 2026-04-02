@@ -7,6 +7,7 @@ const requireRole = require("../middlewares/requireRole");
 // Public
 router.get("/shop", c.getShopPublic);
 router.get("/home", c.getHomePublic);
+router.get("/contact", c.getContactPublic);
 
 // Public admin settings (safe subset)
 router.get("/admin-settings/public", c.getAdminSettingsPublic);
@@ -30,6 +31,26 @@ router.put(
     "admin"
   ),
   c.upsertHome
+);
+
+router.get(
+  "/contact",
+  auth,
+  requireRole(
+    { mode: "any", minLevel: 100, anyPermissions: ["settings:read", "settings:write"] },
+    "admin"
+  ),
+  c.getContact
+);
+
+router.put(
+  "/contact",
+  auth,
+  requireRole(
+    { mode: "any", minLevel: 100, anyPermissions: ["settings:write"] },
+    "admin"
+  ),
+  c.upsertContact
 );
 
 // Admin settings (full doc)

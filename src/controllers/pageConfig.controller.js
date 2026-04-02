@@ -300,6 +300,143 @@ function defaultHomeConfig() {
   };
 }
 
+function defaultContactConfig() {
+  return {
+    hero: {
+      eyebrow: "Contact us",
+      title: "Need help? We are here to make things easier.",
+      description:
+        "Whether you have a question about an order, need support, or want to reach the right team, you can contact Smart Shop in the way that works best for you.",
+      image:
+        "https://images.unsplash.com/photo-1556740749-887f6717d7e4?auto=format&fit=crop&w=1200&q=80",
+      primaryLabel: "Email support",
+      primaryHref: "mailto:support@smartshop.com",
+      secondaryLabel: "Call us",
+      secondaryHref: "tel:+8801234567890",
+    },
+
+    infoCards: {
+      title: "Quick ways to reach us",
+      subtitle:
+        "Use any of these contact options if you want a faster way to get in touch.",
+      items: [
+        {
+          title: "Email us",
+          text: "support@smartshop.com",
+          icon: "mail",
+        },
+        {
+          title: "Call support",
+          text: "+880 1234-567890",
+          icon: "phone",
+        },
+        {
+          title: "Office location",
+          text: "Dhaka, Bangladesh",
+          icon: "mapPin",
+        },
+        {
+          title: "Support hours",
+          text: "Sat–Thu: 9:00 AM – 10:00 PM",
+          icon: "clock",
+        },
+      ],
+    },
+
+    supportCategories: {
+      title: "Choose the right team",
+      subtitle:
+        "Reaching the right team first usually means a faster and more helpful reply.",
+      items: [
+        {
+          title: "Customer support",
+          description:
+            "For help with orders, refunds, payments, returns, or delivery updates.",
+          label: "Contact support",
+          href: "mailto:support@smartshop.com",
+        },
+        {
+          title: "Business inquiries",
+          description:
+            "For partnerships, collaborations, bulk purchases, or other business requests.",
+          label: "Contact business team",
+          href: "mailto:business@smartshop.com",
+        },
+        {
+          title: "Media and press",
+          description:
+            "For interviews, brand-related questions, or press communication.",
+          label: "Contact press team",
+          href: "mailto:press@smartshop.com",
+        },
+      ],
+      resourceButtonLabel: "View help resources",
+      resourceButtonHref: "/faq",
+    },
+
+    faq: {
+      title: "Frequently asked questions",
+      subtitle: "A few common questions customers usually ask before reaching out.",
+      items: [
+        {
+          q: "How can I track my order?",
+          a: "Once your order is shipped, we send a tracking update by email or SMS. You can also check your order status from your account.",
+        },
+        {
+          q: "What is your return policy?",
+          a: "Unused items in their original condition can usually be returned within 7 days. Refund timing may vary depending on the payment method.",
+        },
+        {
+          q: "How do I contact customer support?",
+          a: "You can email us at support@smartshop.com or call +880 1234-567890 during support hours.",
+        },
+        {
+          q: "Do you offer international shipping?",
+          a: "Yes, international shipping is available in selected cases. Delivery time depends on the destination and shipping option.",
+        },
+        {
+          q: "Can I modify or cancel my order?",
+          a: "If your order has not moved into processing yet, our team may still be able to help. Contact support as soon as possible.",
+        },
+      ],
+    },
+
+    location: {
+      title: "Visit our office",
+      subtitle:
+        "If you need in-person assistance or want to reach the team directly, here is our office information.",
+      officeName: "Smart Shop Office",
+      address: "12 Gulshan Avenue, Dhaka 1212, Bangladesh",
+      officeHours: "Saturday to Thursday, 10:00 AM to 6:00 PM",
+      mapEmbedUrl:
+        "https://www.google.com/maps?q=Gulshan%20Avenue%20Dhaka&z=14&output=embed",
+    },
+
+    finalCta: {
+      eyebrow: "Need more help?",
+      title: "We are ready to help you with the next step.",
+      description:
+        "Reach out if you still need support, have a question about your order, or want help from the team directly.",
+      primaryLabel: "Live chat support",
+      primaryHref: "",
+      secondaryLabel: "Email us",
+      secondaryHref: "mailto:support@smartshop.com",
+    },
+
+    social: {
+      title: "Connect with us",
+      subtitle: "Follow Smart Shop for updates, new arrivals, and brand news.",
+      items: [
+        { label: "Facebook", href: "https://facebook.com" },
+        { label: "Instagram", href: "https://instagram.com" },
+        { label: "YouTube", href: "https://youtube.com" },
+        { label: "LinkedIn", href: "https://linkedin.com" },
+        { label: "WhatsApp", href: "https://wa.me/+8801234567890" },
+      ],
+    },
+  };
+}
+
 function defaultAdminSettings() {
   return {
     store: {
@@ -359,6 +496,8 @@ function isSafeUrl(raw) {
   const v = String(raw || "").trim();
   if (!v) return false;
   if (v.startsWith("/")) return true;
+  if (v.startsWith("mailto:")) return true;
+  if (v.startsWith("tel:")) return true;
 
   try {
     const u = new URL(v);
@@ -613,6 +752,165 @@ function normalizeShopCategories(input, defaults = []) {
       if (byOrder !== 0) return byOrder;
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
+}
+
+function normalizeContactInfoCards(items, defaults = []) {
+  const source = Array.isArray(items) ? items : [];
+  const allowedIcons = new Set(["mail", "phone", "mapPin", "clock"]);
+  const normalized = source
+    .map((item, index) => {
+      const title = sanitizeString(item?.title, 60);
+      const text = sanitizeString(item?.text, 140);
+      const iconRaw = sanitizeString(item?.icon, 30);
+      const icon = allowedIcons.has(iconRaw) ? iconRaw : "mail";
+
+      return {
+        title: title || `Card ${index + 1}`,
+        text,
+        icon,
+      };
+    })
+    .filter((item) => item.title || item.text)
+    .slice(0, 4);
+
+  return normalized.length ? normalized : defaults;
+}
+
+function normalizeContactSupportCategories(items, defaults = []) {
+  const source = Array.isArray(items) ? items : [];
+  const normalized = source
+    .map((item, index) => ({
+      title: sanitizeString(item?.title, 80) || `Category ${index + 1}`,
+      description: sanitizeString(item?.description, 240),
+      label: sanitizeString(item?.label, 50) || "Open",
+      href: normalizeUrl(item?.href),
+    }))
+    .filter((item) => item.title || item.description || item.label || item.href)
+    .slice(0, 3);
+
+  return normalized.length ? normalized : defaults;
+}
+
+function normalizeContactFaqItems(items, defaults = []) {
+  const source = Array.isArray(items) ? items : [];
+  const normalized = source
+    .map((item) => ({
+      q: sanitizeString(item?.q, 180),
+      a: sanitizeString(item?.a, 420),
+    }))
+    .filter((item) => item.q || item.a)
+    .slice(0, 8);
+
+  return normalized.length ? normalized : defaults;
+}
+
+function normalizeContactSocialItems(items, defaults = []) {
+  const source = Array.isArray(items) ? items : [];
+  const normalized = source
+    .map((item, index) => ({
+      label: sanitizeString(item?.label, 50) || `Social ${index + 1}`,
+      href: normalizeUrl(item?.href),
+    }))
+    .filter((item) => item.label || item.href)
+    .slice(0, 6);
+
+  return normalized.length ? normalized : defaults;
+}
+
+function validateContactPayload(body) {
+  const base = defaultContactConfig();
+
+  const heroIn = body?.hero || {};
+  const infoCardsIn = body?.infoCards || {};
+  const supportCategoriesIn = body?.supportCategories || {};
+  const faqIn = body?.faq || {};
+  const locationIn = body?.location || {};
+  const finalCtaIn = body?.finalCta || {};
+  const socialIn = body?.social || {};
+
+  return {
+    hero: {
+      eyebrow: sanitizeString(heroIn.eyebrow, 40) || base.hero.eyebrow,
+      title: sanitizeString(heroIn.title, 140) || base.hero.title,
+      description:
+        sanitizeString(heroIn.description, 320) || base.hero.description,
+      image: normalizeUrl(heroIn.image) || base.hero.image,
+      primaryLabel:
+        sanitizeString(heroIn.primaryLabel, 50) || base.hero.primaryLabel,
+      primaryHref: normalizeUrl(heroIn.primaryHref) || base.hero.primaryHref,
+      secondaryLabel:
+        sanitizeString(heroIn.secondaryLabel, 50) || base.hero.secondaryLabel,
+      secondaryHref:
+        normalizeUrl(heroIn.secondaryHref) || base.hero.secondaryHref,
+    },
+
+    infoCards: {
+      title: sanitizeString(infoCardsIn.title, 80) || base.infoCards.title,
+      subtitle:
+        sanitizeString(infoCardsIn.subtitle, 220) || base.infoCards.subtitle,
+      items: normalizeContactInfoCards(infoCardsIn.items, base.infoCards.items),
+    },
+
+    supportCategories: {
+      title:
+        sanitizeString(supportCategoriesIn.title, 80) ||
+        base.supportCategories.title,
+      subtitle:
+        sanitizeString(supportCategoriesIn.subtitle, 220) ||
+        base.supportCategories.subtitle,
+      items: normalizeContactSupportCategories(
+        supportCategoriesIn.items,
+        base.supportCategories.items
+      ),
+      resourceButtonLabel:
+        sanitizeString(supportCategoriesIn.resourceButtonLabel, 50) ||
+        base.supportCategories.resourceButtonLabel,
+      resourceButtonHref:
+        normalizeUrl(supportCategoriesIn.resourceButtonHref) ||
+        base.supportCategories.resourceButtonHref,
+    },
+
+    faq: {
+      title: sanitizeString(faqIn.title, 80) || base.faq.title,
+      subtitle: sanitizeString(faqIn.subtitle, 220) || base.faq.subtitle,
+      items: normalizeContactFaqItems(faqIn.items, base.faq.items),
+    },
+
+    location: {
+      title: sanitizeString(locationIn.title, 80) || base.location.title,
+      subtitle:
+        sanitizeString(locationIn.subtitle, 220) || base.location.subtitle,
+      officeName:
+        sanitizeString(locationIn.officeName, 80) || base.location.officeName,
+      address: sanitizeString(locationIn.address, 240) || base.location.address,
+      officeHours:
+        sanitizeString(locationIn.officeHours, 120) || base.location.officeHours,
+      mapEmbedUrl:
+        normalizeUrl(locationIn.mapEmbedUrl) || base.location.mapEmbedUrl,
+    },
+
+    finalCta: {
+      eyebrow: sanitizeString(finalCtaIn.eyebrow, 40) || base.finalCta.eyebrow,
+      title: sanitizeString(finalCtaIn.title, 140) || base.finalCta.title,
+      description:
+        sanitizeString(finalCtaIn.description, 280) || base.finalCta.description,
+      primaryLabel:
+        sanitizeString(finalCtaIn.primaryLabel, 50) || base.finalCta.primaryLabel,
+      primaryHref:
+        normalizeUrl(finalCtaIn.primaryHref) || base.finalCta.primaryHref,
+      secondaryLabel:
+        sanitizeString(finalCtaIn.secondaryLabel, 50) ||
+        base.finalCta.secondaryLabel,
+      secondaryHref:
+        normalizeUrl(finalCtaIn.secondaryHref) || base.finalCta.secondaryHref,
+    },
+
+    social: {
+      title: sanitizeString(socialIn.title, 80) || base.social.title,
+      subtitle: sanitizeString(socialIn.subtitle, 220) || base.social.subtitle,
+      items: normalizeContactSocialItems(socialIn.items, base.social.items),
+    },
+  };
 }
 
 function isValidObjectIdString(id) {
@@ -1088,6 +1386,61 @@ exports.upsertHome = async (req, res, next) => {
       "pageConfig.home.update"
     );
 
+    res.json({
+      key: doc.key,
+      data: doc.data,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.getContactPublic = async (req, res, next) => {
+  try {
+    const doc = await getOrCreate("contact", defaultContactConfig());
+    const safeData = validateContactPayload(doc?.data || {});
+
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.json({
+      key: doc.key,
+      data: safeData,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.getContact = async (req, res, next) => {
+  try {
+    const doc = await getOrCreate("contact", defaultContactConfig());
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: doc.key,
+      data: validateContactPayload(doc?.data || {}),
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.upsertContact = async (req, res, next) => {
+  try {
+    const data = validateContactPayload(req.body || {});
+    const doc = await updateConfigWithVersioning(
+      req,
+      "contact",
+      data,
+      "pageConfig.contact.update"
+    );
+
+    res.set("Cache-Control", "no-store");
     res.json({
       key: doc.key,
       data: doc.data,
