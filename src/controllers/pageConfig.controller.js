@@ -273,9 +273,30 @@ function defaultHomeConfig() {
       subtitle:
         "Budget-aware shopping paths that help customers discover the right products faster.",
       items: [
-        { id: "under-budget", label: "Under Budget", href: "" },
-        { id: "premium-range", label: "Premium Range", href: "" },
-        { id: "in-stock-deals", label: "In Stock Deals", href: "" },
+        {
+          id: "under-budget",
+          label: "Under Budget",
+          href: "/shop?priceMax=50",
+          img: "",
+          eyebrow: "Accessible picks",
+          description: "Curated essentials for smart everyday shopping.",
+        },
+        {
+          id: "mid-range",
+          label: "Mid Range",
+          href: "/shop?priceMax=100",
+          img: "",
+          eyebrow: "Balanced value",
+          description: "Well-crafted options that balance quality and price.",
+        },
+        {
+          id: "premium-picks",
+          label: "Premium Picks",
+          href: "/shop?priceMin=100",
+          img: "",
+          eyebrow: "Elevated selection",
+          description: "Statement pieces for a more refined wardrobe.",
+        },
       ],
     },
 
@@ -283,11 +304,90 @@ function defaultHomeConfig() {
       title: "Shop by Style",
       subtitle:
         "Fast discovery paths based on category and brand-led shopping intent.",
+      items: [
+        {
+          id: "women",
+          label: "Women",
+          href: "/shop?category=Women",
+          img: "",
+          type: "category",
+          eyebrow: "Everyday edit",
+          description:
+            "Style and sophistication for every occasion with elevated wardrobe essentials.",
+        },
+        {
+          id: "accessories",
+          label: "Accessories",
+          href: "/shop?category=Accessories",
+          img: "",
+          type: "category",
+          eyebrow: "Tailored focus",
+          description:
+            "Premium finishing pieces that bring polish, depth, and signature detail.",
+        },
+        {
+          id: "jewelry",
+          label: "Jewelry",
+          href: "/shop?category=Jewelry",
+          img: "",
+          type: "category",
+          eyebrow: "Refined accents",
+          description:
+            "Refined accents crafted to add confidence, elegance, and distinction.",
+        },
+      ],
     },
 
     instagramFeed: {
       title: "Inspired by the Feed",
       subtitle: "Editorial-style product inspiration built from your live catalog.",
+      items: [
+        {
+          id: "feed-1",
+          title: "Shop the look",
+          href: "/shop",
+          image: "",
+          eyebrow: "Inspired edit",
+          description:
+            "Discover a curated visual story built around standout catalog moments and elevated styling.",
+        },
+        {
+          id: "feed-2",
+          title: "Shop the look",
+          href: "/shop",
+          image: "",
+          eyebrow: "Inspired edit",
+          description:
+            "A refined inspiration point designed to guide faster product discovery.",
+        },
+        {
+          id: "feed-3",
+          title: "Shop the look",
+          href: "/shop",
+          image: "",
+          eyebrow: "Inspired edit",
+          description:
+            "A refined inspiration point designed to guide faster product discovery.",
+        },
+        {
+          id: "feed-4",
+          title: "Shop the look",
+          href: "/shop",
+          image: "",
+          eyebrow: "Inspired edit",
+          description:
+            "A refined inspiration point designed to guide faster product discovery.",
+        },
+        {
+          id: "feed-5",
+          title: "Shop the look",
+          href: "/shop",
+          image: "",
+          eyebrow: "Inspired edit",
+          description:
+            "A refined inspiration point designed to guide faster product discovery.",
+        },
+      ],
     },
 
     brandStory: {
@@ -1083,6 +1183,110 @@ function normalizeSimpleStringList(items = [], maxItems = 6, maxLen = 40) {
   return out.slice(0, maxItems);
 }
 
+function normalizeHomePriceItems(items, defaults = []) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index] || {};
+    const id =
+      sanitizeString(item?.id, 60) || `price-${index + 1}`;
+    const label = sanitizeString(item?.label, 80);
+    const href = normalizeUrl(item?.href);
+    const img = normalizeUrl(item?.img || item?.image);
+    const eyebrow = sanitizeString(item?.eyebrow, 40);
+    const description = sanitizeString(item?.description, 180);
+
+    if (!label) continue;
+
+    const key = `${id.toLowerCase()}::${label.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      id,
+      label,
+      href,
+      img,
+      eyebrow,
+      description,
+    });
+  }
+
+  return (out.length ? out : defaults).slice(0, 3);
+}
+
+function normalizeHomeStyleItems(items, defaults = []) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index] || {};
+    const id =
+      sanitizeString(item?.id, 60) || `style-${index + 1}`;
+    const label = sanitizeString(item?.label, 80);
+    const href = normalizeUrl(item?.href);
+    const img = normalizeUrl(item?.img || item?.image);
+    const type = sanitizeString(item?.type, 30).toLowerCase() || "style";
+    const eyebrow = sanitizeString(item?.eyebrow, 40);
+    const description = sanitizeString(item?.description, 200);
+
+    if (!label) continue;
+
+    const key = `${id.toLowerCase()}::${label.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      id,
+      label,
+      href,
+      img,
+      type,
+      eyebrow,
+      description,
+    });
+  }
+
+  return (out.length ? out : defaults).slice(0, 3);
+}
+
+function normalizeHomeFeedItems(items, defaults = []) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index] || {};
+    const id =
+      sanitizeString(item?.id, 60) || `feed-${index + 1}`;
+    const title = sanitizeString(item?.title, 90);
+    const href = normalizeUrl(item?.href);
+    const image = normalizeUrl(item?.image || item?.img);
+    const eyebrow = sanitizeString(item?.eyebrow, 40);
+    const description = sanitizeString(item?.description, 180);
+
+    if (!title) continue;
+
+    const key = `${id.toLowerCase()}::${title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      id,
+      title,
+      href,
+      image,
+      eyebrow,
+      description,
+    });
+  }
+
+  return (out.length ? out : defaults).slice(0, 5);
+}
+
 function validateContactPayload(body) {
   const base = defaultContactConfig();
 
@@ -1529,22 +1733,14 @@ function validateHomePayload(body) {
       title: sanitizeString(shopByPriceIn.title, 80) || base.shopByPrice.title,
       subtitle:
         sanitizeString(shopByPriceIn.subtitle, 220) || base.shopByPrice.subtitle,
-      items: normalizeSimpleItems(shopByPriceIn.items, {
-        maxItems: 6,
-        titleMax: 80,
-      })
-        .map((item) => ({
-          id: item.id,
-          label: item.label || "Price range",
-          href: item.href,
-        }))
-        .filter((item) => item.label),
+      items: normalizeHomePriceItems(shopByPriceIn.items, base.shopByPrice.items),
     },
 
     shopByStyle: {
       title: sanitizeString(shopByStyleIn.title, 80) || base.shopByStyle.title,
       subtitle:
         sanitizeString(shopByStyleIn.subtitle, 220) || base.shopByStyle.subtitle,
+      items: normalizeHomeStyleItems(shopByStyleIn.items, base.shopByStyle.items),
     },
 
     instagramFeed: {
@@ -1553,6 +1749,7 @@ function validateHomePayload(body) {
       subtitle:
         sanitizeString(instagramFeedIn.subtitle, 220) ||
         base.instagramFeed.subtitle,
+      items: normalizeHomeFeedItems(instagramFeedIn.items, base.instagramFeed.items),
     },
 
     brandStory: {
@@ -1801,6 +1998,22 @@ exports.getHomePublic = async (req, res, next) => {
     res.json({
       key: doc.key,
       data: safeData,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.getHome = async (req, res, next) => {
+  try {
+    const doc = await getOrCreate("home", defaultHomeConfig());
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: doc.key,
+      data: validateHomePayload(doc?.data || {}),
       updatedAt: doc.updatedAt,
       version: doc.version,
     });

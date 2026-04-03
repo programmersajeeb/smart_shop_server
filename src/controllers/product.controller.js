@@ -453,6 +453,8 @@ function buildStyleOptions(products = [], req, registry = []) {
       type: "category",
       image: item.image ? normalizePublicMediaUrl(item.image, req) : null,
       img: item.image ? normalizePublicMediaUrl(item.image, req) : null,
+      eyebrow: "Category edit",
+      description: "",
     });
   }
 
@@ -477,6 +479,8 @@ function buildStyleOptions(products = [], req, registry = []) {
       type: "brand",
       image: image || null,
       img: image || null,
+      eyebrow: "Brand edit",
+      description: "",
     });
   }
 
@@ -487,8 +491,11 @@ function buildInstagramFeed(products = [], req) {
   return products.slice(0, 6).map((p, index) => ({
     id: String(p?._id || `ig-${index + 1}`),
     image: pickPrimaryImageUrl(p, req),
+    img: pickPrimaryImageUrl(p, req),
     title: p?.title || "Shop the look",
     href: `/shop?q=${encodeURIComponent(String(p?.title || "").trim())}`,
+    eyebrow: "Inspired edit",
+    description: trimText(p?.description || "", 140),
   }));
 }
 
@@ -647,6 +654,141 @@ function normalizeHomeStats(items = [], fallback = []) {
     .slice(0, 6);
 
   return normalized.length ? normalized : fallback;
+}
+
+function normalizeConfiguredPriceItems(items = [], priceMid = 0) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index] || {};
+    const id = sanitizeHomeText(item?.id, 60) || `price-${index + 1}`;
+    const label = sanitizeHomeText(item?.label, 80);
+    const href =
+      sanitizeHomeUrl(item?.href) ||
+      [
+        `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}`,
+        `/shop?priceMax=${encodeURIComponent(
+          String(priceMid || 0)
+        )}&priceMin=${encodeURIComponent(
+          String(Math.max(0, Math.round((priceMid || 0) * 0.5)))
+        )}`,
+        `/shop?priceMin=${encodeURIComponent(String(priceMid || 0))}`,
+      ][index] ||
+      "/shop";
+
+    const img = sanitizeHomeUrl(item?.img || item?.image);
+    const image = sanitizeHomeUrl(item?.image || item?.img);
+    const eyebrow = sanitizeHomeText(item?.eyebrow, 40);
+    const description = sanitizeHomeText(item?.description, 180);
+
+    if (!label) continue;
+
+    const key = `${id.toLowerCase()}::${label.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      id,
+      label,
+      href,
+      img,
+      image,
+      eyebrow,
+      description,
+    });
+  }
+
+  return out.slice(0, 3);
+}
+
+function normalizeConfiguredStyleItems(items = [], autoItems = []) {
+  const configured = Array.isArray(items) ? items : [];
+  const auto = Array.isArray(autoItems) ? autoItems : [];
+  const baseSource = configured.length ? configured.slice(0, 3) : auto.slice(0, 3);
+
+  return baseSource.map((item, index) => {
+    const fallback = auto[index] || {};
+    const label =
+      sanitizeHomeText(item?.label, 80) ||
+      sanitizeHomeText(fallback?.label, 80) ||
+      `Style ${index + 1}`;
+
+    return {
+      id:
+        sanitizeHomeText(item?.id, 60) ||
+        sanitizeHomeText(fallback?.id, 60) ||
+        `style-${index + 1}`,
+      label,
+      href:
+        sanitizeHomeUrl(item?.href) ||
+        sanitizeHomeUrl(fallback?.href) ||
+        "/shop",
+      img:
+        sanitizeHomeUrl(item?.img || item?.image) ||
+        sanitizeHomeUrl(fallback?.img || fallback?.image) ||
+        "",
+      image:
+        sanitizeHomeUrl(item?.image || item?.img) ||
+        sanitizeHomeUrl(fallback?.image || fallback?.img) ||
+        "",
+      type:
+        sanitizeHomeText(item?.type, 30)?.toLowerCase() ||
+        sanitizeHomeText(fallback?.type, 30)?.toLowerCase() ||
+        "style",
+      eyebrow:
+        sanitizeHomeText(item?.eyebrow, 40) ||
+        sanitizeHomeText(fallback?.eyebrow, 40) ||
+        "",
+      description:
+        sanitizeHomeText(item?.description, 200) ||
+        sanitizeHomeText(fallback?.description, 200) ||
+        "",
+    };
+  });
+}
+
+function normalizeConfiguredFeedItems(items = [], autoItems = []) {
+  const configured = Array.isArray(items) ? items : [];
+  const auto = Array.isArray(autoItems) ? autoItems : [];
+  const baseSource = configured.length ? configured.slice(0, 5) : auto.slice(0, 5);
+
+  return baseSource.map((item, index) => {
+    const fallback = auto[index] || {};
+    const title =
+      sanitizeHomeText(item?.title, 90) ||
+      sanitizeHomeText(fallback?.title, 90) ||
+      "Shop the look";
+
+    return {
+      id:
+        sanitizeHomeText(item?.id, 60) ||
+        sanitizeHomeText(fallback?.id, 60) ||
+        `feed-${index + 1}`,
+      title,
+      href:
+        sanitizeHomeUrl(item?.href) ||
+        sanitizeHomeUrl(fallback?.href) ||
+        "/shop",
+      image:
+        sanitizeHomeUrl(item?.image || item?.img) ||
+        sanitizeHomeUrl(fallback?.image || fallback?.img) ||
+        "",
+      img:
+        sanitizeHomeUrl(item?.img || item?.image) ||
+        sanitizeHomeUrl(fallback?.img || fallback?.image) ||
+        "",
+      eyebrow:
+        sanitizeHomeText(item?.eyebrow, 40) ||
+        sanitizeHomeText(fallback?.eyebrow, 40) ||
+        "",
+      description:
+        sanitizeHomeText(item?.description, 180) ||
+        sanitizeHomeText(fallback?.description, 180) ||
+        "",
+    };
+  });
 }
 
 // GET /products (public)
@@ -1003,14 +1145,26 @@ exports.home = async (req, res, next) => {
     const priceMid = Math.max(priceMin, Math.round((priceMin + priceMax) / 2));
 
     const collections = buildCollections(collectionAgg, req, shopRegistry);
-    const shopByStyle = buildStyleOptions(
+
+    const autoShopByStyle = buildStyleOptions(
       [...latestProducts, ...featuredProducts],
       req,
       shopRegistry
     );
-    const instagramFeed = buildInstagramFeed(
+
+    const autoInstagramFeed = buildInstagramFeed(
       [...latestProducts, ...featuredProducts],
       req
+    );
+
+    const shopByStyle = normalizeConfiguredStyleItems(
+      styleCfg?.items,
+      autoShopByStyle
+    );
+
+    const instagramFeed = normalizeConfiguredFeedItems(
+      feedCfg?.items,
+      autoInstagramFeed
     );
 
     const safeCategory =
@@ -1073,42 +1227,46 @@ exports.home = async (req, res, next) => {
       ]
     );
 
-    const shopByPriceItems =
-      Array.isArray(priceCfg?.items) && priceCfg.items.length
-        ? priceCfg.items.slice(0, 3).map((item, index) => ({
-            id: sanitizeHomeText(item?.id, 60) || `price-${index + 1}`,
-            label:
-              sanitizeHomeText(item?.label, 80) || `Price range ${index + 1}`,
-            href:
-              sanitizeHomeUrl(item?.href) ||
-              [
-                `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}`,
-                `/shop?priceMin=${encodeURIComponent(String(priceMid || 0))}`,
-                `/shop?priceMax=${encodeURIComponent(
-                  String(priceMid || 0)
-                )}&inStock=true`,
-              ][index] ||
-              "/shop",
-          }))
-        : [
-            {
-              id: "under-mid",
-              label: "Under budget",
-              href: `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}`,
-            },
-            {
-              id: "premium-range",
-              label: "Premium range",
-              href: `/shop?priceMin=${encodeURIComponent(String(priceMid || 0))}`,
-            },
-            {
-              id: "in-stock-value",
-              label: "In stock deals",
-              href: `/shop?priceMax=${encodeURIComponent(
-                String(priceMid || 0)
-              )}&inStock=true`,
-            },
-          ];
+    const shopByPriceItems = normalizeConfiguredPriceItems(
+      priceCfg?.items,
+      priceMid
+    );
+
+    if (!shopByPriceItems.length) {
+      shopByPriceItems.push(
+        {
+          id: "under-budget",
+          label: "Under Budget",
+          href: `/shop?priceMax=${encodeURIComponent(String(priceMid || 0))}`,
+          img: "",
+          image: "",
+          eyebrow: "Accessible picks",
+          description: "Curated essentials for smart everyday shopping.",
+        },
+        {
+          id: "mid-range",
+          label: "Mid Range",
+          href: `/shop?priceMax=${encodeURIComponent(
+            String(priceMid || 0)
+          )}&priceMin=${encodeURIComponent(
+            String(Math.max(0, Math.round((priceMid || 0) * 0.5)))
+          )}`,
+          img: "",
+          image: "",
+          eyebrow: "Balanced value",
+          description: "Well-crafted options that balance quality and price.",
+        },
+        {
+          id: "premium-picks",
+          label: "Premium Picks",
+          href: `/shop?priceMin=${encodeURIComponent(String(priceMid || 0))}`,
+          img: "",
+          image: "",
+          eyebrow: "Elevated selection",
+          description: "Statement pieces for a more refined wardrobe.",
+        }
+      );
+    }
 
     const flashCampaignStatus = activeFlashCampaign
       ? getPromotionComputedStatus(activeFlashCampaign, now)
@@ -1372,7 +1530,15 @@ exports.home = async (req, res, next) => {
           subtitle:
             sanitizeHomeText(priceCfg?.subtitle, 220) ||
             "Budget-aware shopping paths that help customers discover the right products faster.",
-          items: shopByPriceItems,
+          items: shopByPriceItems.map((item, index) => ({
+            id: sanitizeHomeText(item?.id, 60) || `price-${index + 1}`,
+            label: sanitizeHomeText(item?.label, 80) || `Price range ${index + 1}`,
+            href: sanitizeHomeUrl(item?.href) || "/shop",
+            img: sanitizeHomeUrl(item?.img || item?.image) || "",
+            image: sanitizeHomeUrl(item?.image || item?.img) || "",
+            eyebrow: sanitizeHomeText(item?.eyebrow, 40) || "",
+            description: sanitizeHomeText(item?.description, 180) || "",
+          })),
           meta: {
             min: priceMin,
             max: priceMax,
@@ -1386,7 +1552,16 @@ exports.home = async (req, res, next) => {
           subtitle:
             sanitizeHomeText(styleCfg?.subtitle, 220) ||
             "Fast discovery paths based on category and brand-led shopping intent.",
-          items: shopByStyle,
+          items: shopByStyle.map((item, index) => ({
+            id: sanitizeHomeText(item?.id, 60) || `style-${index + 1}`,
+            label: sanitizeHomeText(item?.label, 80) || `Style ${index + 1}`,
+            href: sanitizeHomeUrl(item?.href) || "/shop",
+            img: sanitizeHomeUrl(item?.img || item?.image) || "",
+            image: sanitizeHomeUrl(item?.image || item?.img) || "",
+            type: sanitizeHomeText(item?.type, 30)?.toLowerCase() || "style",
+            eyebrow: sanitizeHomeText(item?.eyebrow, 40) || "",
+            description: sanitizeHomeText(item?.description, 200) || "",
+          })),
         },
 
         instagramFeed: {
@@ -1395,7 +1570,15 @@ exports.home = async (req, res, next) => {
           subtitle:
             sanitizeHomeText(feedCfg?.subtitle, 220) ||
             "Editorial-style product inspiration built from your live catalog.",
-          items: instagramFeed,
+          items: instagramFeed.map((item, index) => ({
+            id: sanitizeHomeText(item?.id, 60) || `feed-${index + 1}`,
+            title: sanitizeHomeText(item?.title, 90) || "Shop the look",
+            href: sanitizeHomeUrl(item?.href) || "/shop",
+            image: sanitizeHomeUrl(item?.image || item?.img) || "",
+            img: sanitizeHomeUrl(item?.img || item?.image) || "",
+            eyebrow: sanitizeHomeText(item?.eyebrow, 40) || "",
+            description: sanitizeHomeText(item?.description, 180) || "",
+          })),
         },
 
         brandStory: {
