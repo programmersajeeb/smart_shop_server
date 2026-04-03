@@ -615,6 +615,40 @@ function takeSectionProducts(source = [], limit = 4) {
   return uniqueProducts(Array.isArray(source) ? source : [], limit);
 }
 
+function normalizeHomeStringList(items = [], maxItems = 6, maxLen = 40) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (const raw of list) {
+    const value = sanitizeHomeText(
+      typeof raw === "string" ? raw : raw?.label,
+      maxLen
+    );
+    if (!value) continue;
+
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+
+  return out.slice(0, maxItems);
+}
+
+function normalizeHomeStats(items = [], fallback = []) {
+  const list = Array.isArray(items) ? items : [];
+  const normalized = list
+    .map((item, index) => ({
+      label: sanitizeHomeText(item?.label, 40) || `Stat ${index + 1}`,
+      value: sanitizeHomeText(item?.value, 40) || "",
+    }))
+    .filter((item) => item.label || item.value)
+    .slice(0, 6);
+
+  return normalized.length ? normalized : fallback;
+}
+
 // GET /products (public)
 exports.list = async (req, res, next) => {
   try {
@@ -988,49 +1022,56 @@ exports.home = async (req, res, next) => {
     const fallbackHeroImage =
       pickPrimaryImageUrl(latestProducts[0], req) ||
       pickPrimaryImageUrl(featuredProducts[0], req) ||
-      "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?q=80&w=1400&auto=format&fit=crop";
+      "";
 
     const fallbackSeasonalImage =
       pickPrimaryImageUrl(featuredProducts[1], req) ||
       pickPrimaryImageUrl(discountedRaw[0], req) ||
-      fallbackHeroImage;
+      fallbackHeroImage ||
+      "";
 
     const fallbackBrandStoryImage =
       pickPrimaryImageUrl(featuredProducts[2], req) ||
       pickPrimaryImageUrl(latestProducts[1], req) ||
-      fallbackHeroImage;
+      fallbackHeroImage ||
+      "";
 
-    const heroStats =
-      Array.isArray(heroCfg?.stats) && heroCfg.stats.length
-        ? heroCfg.stats
-            .map((item, index) => {
-              const label =
-                sanitizeHomeText(item?.label, 40) || `Stat ${index + 1}`;
-              let value = sanitizeHomeText(item?.value, 40);
+    const heroHighlights =
+      normalizeHomeStringList(heroCfg?.highlights, 6, 40).length > 0
+        ? normalizeHomeStringList(heroCfg?.highlights, 6, 40)
+        : ["Fresh arrivals", "Thoughtful edits", "Reliable delivery"];
 
-              if (!value) {
-                if (/active products/i.test(label)) value = String(activeCount || 0);
-                else if (/collections/i.test(label)) {
-                  value = String((collections || []).length || 0);
-                } else if (/brands/i.test(label)) {
-                  value = String((allBrands || []).filter(Boolean).length || 0);
-                }
+    const heroStats = normalizeHomeStats(
+      Array.isArray(heroCfg?.stats)
+        ? heroCfg.stats.map((item, index) => {
+            const label =
+              sanitizeHomeText(item?.label, 40) || `Stat ${index + 1}`;
+            let value = sanitizeHomeText(item?.value, 40);
+
+            if (!value) {
+              if (/active products/i.test(label)) value = String(activeCount || 0);
+              else if (/collections/i.test(label)) {
+                value = String((collections || []).length || 0);
+              } else if (/brands/i.test(label)) {
+                value = String((allBrands || []).filter(Boolean).length || 0);
               }
+            }
 
-              return {
-                label,
-                value: value || "--",
-              };
-            })
-            .slice(0, 6)
-        : [
-            { label: "Active products", value: String(activeCount || 0) },
-            { label: "Collections", value: String((collections || []).length || 0) },
-            {
-              label: "Brands",
-              value: String((allBrands || []).filter(Boolean).length || 0),
-            },
-          ];
+            return {
+              label,
+              value: value || "--",
+            };
+          })
+        : [],
+      [
+        { label: "Active products", value: String(activeCount || 0) },
+        { label: "Collections", value: String((collections || []).length || 0) },
+        {
+          label: "Brands",
+          value: String((allBrands || []).filter(Boolean).length || 0),
+        },
+      ]
+    );
 
     const shopByPriceItems =
       Array.isArray(priceCfg?.items) && priceCfg.items.length
@@ -1086,6 +1127,25 @@ exports.home = async (req, res, next) => {
           }
         : null;
 
+    const seasonalHighlights =
+      normalizeHomeStringList(seasonalCfg?.highlights, 6, 40).length > 0
+        ? normalizeHomeStringList(seasonalCfg?.highlights, 6, 40)
+        : ["Limited edit", "Premium textures", "Modern silhouettes"];
+
+    const brandStoryHighlights =
+      normalizeHomeStringList(brandStoryCfg?.highlights, 6, 40).length > 0
+        ? normalizeHomeStringList(brandStoryCfg?.highlights, 6, 40)
+        : ["Curated catalog", "Cleaner discovery", "Premium storefront"];
+
+    const brandStoryStats = normalizeHomeStats(
+      brandStoryCfg?.stats,
+      [
+        { label: "Curated catalog", value: "Live" },
+        { label: "Storefront", value: "Premium" },
+        { label: "Experience", value: "Responsive" },
+      ]
+    ).slice(0, 3);
+
     res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
     res.json({
       ok: true,
@@ -1099,7 +1159,7 @@ exports.home = async (req, res, next) => {
           description:
             sanitizeHomeText(heroCfg?.description, 320) ||
             "Discover premium pieces curated from your live catalog, designed for comfort, confidence, and modern style.",
-          image: sanitizeHomeUrl(heroCfg?.image) || fallbackHeroImage,
+          image: sanitizeHomeUrl(heroCfg?.image) || fallbackHeroImage || "",
           primaryCta: {
             label:
               sanitizeHomeText(heroCfg?.primaryCtaLabel, 40) ||
@@ -1114,6 +1174,12 @@ exports.home = async (req, res, next) => {
               "Explore latest",
             href: sanitizeHomeUrl(heroCfg?.secondaryCtaHref) || "/shop?sort=latest",
           },
+          featureBadge:
+            sanitizeHomeText(heroCfg?.featureBadge, 40) || "Featured selection",
+          featureText:
+            sanitizeHomeText(heroCfg?.featureText, 180) ||
+            "A premium first impression built around strong presentation and cleaner discovery.",
+          highlights: heroHighlights,
           stats: heroStats,
         },
 
@@ -1276,13 +1342,28 @@ exports.home = async (req, res, next) => {
           description:
             sanitizeHomeText(seasonalCfg?.description, 260) ||
             "Explore timely essentials and standout pieces crafted to keep your catalog feeling current.",
-          image: sanitizeHomeUrl(seasonalCfg?.image) || fallbackSeasonalImage,
+          image: sanitizeHomeUrl(seasonalCfg?.image) || fallbackSeasonalImage || "",
           cta: {
             label:
               sanitizeHomeText(seasonalCfg?.ctaLabel, 40) ||
               "Shop seasonal picks",
             href: sanitizeHomeUrl(seasonalCfg?.ctaHref) || "/shop?sort=latest",
           },
+          secondaryCta: {
+            label:
+              sanitizeHomeText(seasonalCfg?.secondaryCtaLabel, 40) ||
+              "Explore latest",
+            href:
+              sanitizeHomeUrl(seasonalCfg?.secondaryCtaHref) ||
+              "/shop?sort=latest",
+          },
+          featureBadge:
+            sanitizeHomeText(seasonalCfg?.featureBadge, 40) ||
+            "Seasonal spotlight",
+          featureText:
+            sanitizeHomeText(seasonalCfg?.featureText, 180) ||
+            "A campaign-led section that keeps the homepage feeling current and elevated.",
+          highlights: seasonalHighlights,
         },
 
         shopByPrice: {
@@ -1327,13 +1408,28 @@ exports.home = async (req, res, next) => {
             sanitizeHomeText(brandStoryCfg?.description, 320) ||
             "This storefront blends structured catalog data, strong merchandising foundations, and scalable customer journeys to create a more premium digital retail experience.",
           image:
-            sanitizeHomeUrl(brandStoryCfg?.image) || fallbackBrandStoryImage,
+            sanitizeHomeUrl(brandStoryCfg?.image) || fallbackBrandStoryImage || "",
           cta: {
             label:
               sanitizeHomeText(brandStoryCfg?.ctaLabel, 40) ||
               "Explore the catalog",
             href: sanitizeHomeUrl(brandStoryCfg?.ctaHref) || "/shop",
           },
+          secondaryCta: {
+            label:
+              sanitizeHomeText(brandStoryCfg?.secondaryCtaLabel, 40) ||
+              "View latest arrivals",
+            href:
+              sanitizeHomeUrl(brandStoryCfg?.secondaryCtaHref) ||
+              "/shop?sort=latest",
+          },
+          featureBadge:
+            sanitizeHomeText(brandStoryCfg?.featureBadge, 40) || "Brand story",
+          featureText:
+            sanitizeHomeText(brandStoryCfg?.featureText, 180) ||
+            "A stronger brand section helps the storefront feel more trustworthy, premium, and memorable.",
+          highlights: brandStoryHighlights,
+          stats: brandStoryStats,
         },
 
         newsletter: {

@@ -144,6 +144,10 @@ function defaultHomeConfig() {
       primaryCtaHref: "",
       secondaryCtaLabel: "Explore latest",
       secondaryCtaHref: "/shop?sort=latest",
+      featureBadge: "Featured selection",
+      featureText:
+        "A premium first impression built around strong presentation and cleaner discovery.",
+      highlights: ["Fresh arrivals", "Thoughtful edits", "Reliable delivery"],
       stats: [
         { label: "Active products", value: "" },
         { label: "Collections", value: "" },
@@ -256,6 +260,12 @@ function defaultHomeConfig() {
       image: "",
       ctaLabel: "Shop seasonal picks",
       ctaHref: "/shop?sort=latest",
+      secondaryCtaLabel: "Explore latest",
+      secondaryCtaHref: "/shop?sort=latest",
+      featureBadge: "Seasonal spotlight",
+      featureText:
+        "A campaign-led section that keeps the homepage feeling current and elevated.",
+      highlights: ["Limited edit", "Premium textures", "Modern silhouettes"],
     },
 
     shopByPrice: {
@@ -288,6 +298,17 @@ function defaultHomeConfig() {
       image: "",
       ctaLabel: "Explore the catalog",
       ctaHref: "/shop",
+      secondaryCtaLabel: "View latest arrivals",
+      secondaryCtaHref: "/shop?sort=latest",
+      featureBadge: "Brand story",
+      featureText:
+        "A stronger brand section helps the storefront feel more trustworthy, premium, and memorable.",
+      highlights: ["Curated catalog", "Cleaner discovery", "Premium storefront"],
+      stats: [
+        { label: "Curated catalog", value: "Live" },
+        { label: "Storefront", value: "Premium" },
+        { label: "Experience", value: "Responsive" },
+      ],
     },
 
     newsletter: {
@@ -983,7 +1004,8 @@ function normalizeCollectionsHighlightItem(item, index = 0) {
 function normalizeCollectionsCard(item, index = 0) {
   const safeTitle = sanitizeString(item?.title, 80);
   const safeSlug =
-    sanitizeString(item?.slug, 60) || slugify(item?.title || `collection-${index + 1}`);
+    sanitizeString(item?.slug, 60) ||
+    slugify(item?.title || `collection-${index + 1}`);
 
   const safeHighlights = Array.isArray(item?.highlights)
     ? item.highlights
@@ -1041,6 +1063,24 @@ function normalizeCollectionsCards(input, defaults = []) {
       if (byOrder !== 0) return byOrder;
       return String(a.title || "").localeCompare(String(b.title || ""));
     });
+}
+
+function normalizeSimpleStringList(items = [], maxItems = 6, maxLen = 40) {
+  const list = Array.isArray(items) ? items : [];
+  const out = [];
+  const seen = new Set();
+
+  for (const raw of list) {
+    const value = sanitizeString(typeof raw === "string" ? raw : raw?.label, maxLen);
+    if (!value) continue;
+
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+
+  return out.slice(0, maxItems);
 }
 
 function validateContactPayload(body) {
@@ -1390,6 +1430,14 @@ function validateHomePayload(body) {
         base.hero.secondaryCtaLabel,
       secondaryCtaHref:
         normalizeUrl(heroIn.secondaryCtaHref) || base.hero.secondaryCtaHref,
+      featureBadge:
+        sanitizeString(heroIn.featureBadge, 40) || base.hero.featureBadge,
+      featureText:
+        sanitizeString(heroIn.featureText, 180) || base.hero.featureText,
+      highlights:
+        normalizeSimpleStringList(heroIn.highlights, 6, 40).length > 0
+          ? normalizeSimpleStringList(heroIn.highlights, 6, 40)
+          : base.hero.highlights,
       stats:
         normalizeSimpleStats(heroIn.stats).length > 0
           ? normalizeSimpleStats(heroIn.stats)
@@ -1459,6 +1507,22 @@ function validateHomePayload(body) {
         base.seasonalBanner.ctaLabel,
       ctaHref:
         normalizeUrl(seasonalBannerIn.ctaHref) || base.seasonalBanner.ctaHref,
+      secondaryCtaLabel:
+        sanitizeString(seasonalBannerIn.secondaryCtaLabel, 40) ||
+        base.seasonalBanner.secondaryCtaLabel,
+      secondaryCtaHref:
+        normalizeUrl(seasonalBannerIn.secondaryCtaHref) ||
+        base.seasonalBanner.secondaryCtaHref,
+      featureBadge:
+        sanitizeString(seasonalBannerIn.featureBadge, 40) ||
+        base.seasonalBanner.featureBadge,
+      featureText:
+        sanitizeString(seasonalBannerIn.featureText, 180) ||
+        base.seasonalBanner.featureText,
+      highlights:
+        normalizeSimpleStringList(seasonalBannerIn.highlights, 6, 40).length > 0
+          ? normalizeSimpleStringList(seasonalBannerIn.highlights, 6, 40)
+          : base.seasonalBanner.highlights,
     },
 
     shopByPrice: {
@@ -1502,6 +1566,26 @@ function validateHomePayload(body) {
       ctaLabel:
         sanitizeString(brandStoryIn.ctaLabel, 40) || base.brandStory.ctaLabel,
       ctaHref: normalizeUrl(brandStoryIn.ctaHref) || base.brandStory.ctaHref,
+      secondaryCtaLabel:
+        sanitizeString(brandStoryIn.secondaryCtaLabel, 40) ||
+        base.brandStory.secondaryCtaLabel,
+      secondaryCtaHref:
+        normalizeUrl(brandStoryIn.secondaryCtaHref) ||
+        base.brandStory.secondaryCtaHref,
+      featureBadge:
+        sanitizeString(brandStoryIn.featureBadge, 40) ||
+        base.brandStory.featureBadge,
+      featureText:
+        sanitizeString(brandStoryIn.featureText, 180) ||
+        base.brandStory.featureText,
+      highlights:
+        normalizeSimpleStringList(brandStoryIn.highlights, 6, 40).length > 0
+          ? normalizeSimpleStringList(brandStoryIn.highlights, 6, 40)
+          : base.brandStory.highlights,
+      stats:
+        normalizeSimpleStats(brandStoryIn.stats).length > 0
+          ? normalizeSimpleStats(brandStoryIn.stats)
+          : base.brandStory.stats,
     },
 
     newsletter: {

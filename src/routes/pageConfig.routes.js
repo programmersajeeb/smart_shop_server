@@ -13,6 +13,49 @@ router.get("/collections", c.getCollectionsPublic);
 // Public admin settings (safe subset)
 router.get("/admin-settings/public", c.getAdminSettingsPublic);
 
+// Admin / CMS read routes
+router.get(
+  "/home/admin",
+  auth,
+  requireRole(
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
+    "admin"
+  ),
+  c.getHomePublic
+);
+
+router.get(
+  "/contact",
+  auth,
+  requireRole(
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
+    "admin"
+  ),
+  c.getContact
+);
+
+router.get(
+  "/collections",
+  auth,
+  requireRole(
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
+    "admin"
+  ),
+  c.getCollections
+);
+
 // Admin / CMS write routes
 router.put(
   "/shop",
@@ -34,20 +77,6 @@ router.put(
   c.upsertHome
 );
 
-router.get(
-  "/contact",
-  auth,
-  requireRole(
-    {
-      mode: "any",
-      minLevel: 100,
-      anyPermissions: ["settings:read", "settings:write"],
-    },
-    "admin"
-  ),
-  c.getContact
-);
-
 router.put(
   "/contact",
   auth,
@@ -56,20 +85,6 @@ router.put(
     "admin"
   ),
   c.upsertContact
-);
-
-router.get(
-  "/collections",
-  auth,
-  requireRole(
-    {
-      mode: "any",
-      minLevel: 100,
-      anyPermissions: ["settings:read", "settings:write"],
-    },
-    "admin"
-  ),
-  c.getCollections
 );
 
 router.put(
@@ -83,7 +98,6 @@ router.put(
 );
 
 // Admin settings (full doc)
-// GET should allow read OR write
 router.get(
   "/admin-settings",
   auth,
@@ -98,7 +112,6 @@ router.get(
   c.getAdminSettings
 );
 
-// PUT should require write
 router.put(
   "/admin-settings",
   auth,
