@@ -180,7 +180,6 @@ NewsletterSubscriberSchema.pre("save", function () {
   this.meta.locale = this.meta.locale ? String(this.meta.locale).trim() : null;
 });
 
-NewsletterSubscriberSchema.index({ email: 1 }, { unique: true });
 NewsletterSubscriberSchema.index({ status: 1, createdAt: -1 });
 NewsletterSubscriberSchema.index({ source: 1, createdAt: -1 });
 NewsletterSubscriberSchema.index({ lastSource: 1, createdAt: -1 });
