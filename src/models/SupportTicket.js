@@ -163,7 +163,7 @@ SupportTicketSchema.index({
   ticketNo: "text",
 });
 
-SupportTicketSchema.pre("validate", function (next) {
+SupportTicketSchema.pre("validate", function () {
   this.name = normalizeText(this.name);
   this.email = normalizeText(this.email).toLowerCase();
   this.phone = normalizeText(this.phone);
@@ -176,22 +176,15 @@ SupportTicketSchema.pre("validate", function (next) {
   if (!this.lastActivityAt) {
     this.lastActivityAt = new Date();
   }
-
-  next();
 });
 
-SupportTicketSchema.pre("save", async function (next) {
-  if (!this.isNew || this.ticketNo) return next();
+SupportTicketSchema.pre("save", async function () {
+  if (!this.isNew || this.ticketNo) return;
 
-  try {
-    const model = this.constructor;
-    const count = await model.countDocuments();
-    const seq = String(count + 1).padStart(4, "0");
-    this.ticketNo = `SUP-${seq}`;
-    next();
-  } catch (error) {
-    next(error);
-  }
+  const model = this.constructor;
+  const count = await model.countDocuments();
+  const seq = String(count + 1).padStart(4, "0");
+  this.ticketNo = `SUP-${seq}`;
 });
 
 module.exports = mongoose.model("SupportTicket", SupportTicketSchema);

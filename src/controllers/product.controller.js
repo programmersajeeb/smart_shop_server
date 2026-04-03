@@ -9,19 +9,20 @@ const Order = require("../models/Order");
  * ============================================================
  * Products Controller (Enterprise-ready)
  * ------------------------------------------------------------
- * ✅ Public list: search + pagination + sorting + filters
- * ✅ Public list: excludeId / excludeIds support
- * ✅ Facets: registry-aware categories + brands + price range
- * ✅ Admin list: includes inactive products + inventory filters
- * ✅ CRUD: keeps titleLower in sync
- * ✅ Admin Categories: aggregated view + rename/delete
- * ✅ Inventory Summary: KPI cards for inventory module
- * ✅ Bulk Inventory Update: stock/threshold update for selected products
- * ✅ Homepage payload: curated home sections for enterprise storefront
- * ✅ Flash sale campaign timer support from Promotion module
- * ✅ Audit logging (best-effort, never breaks flows)
- * ✅ Stable independent merchandising allocation
- * ✅ Shop master category registry sync
+ * Public list: search + pagination + sorting + filters
+ * Public list: excludeId / excludeIds support
+ * Facets: registry-aware categories + brands + price range
+ * Admin list: includes inactive products + inventory filters
+ * CRUD: keeps titleLower in sync
+ * Admin Categories: aggregated view + rename/delete
+ * Inventory Summary: KPI cards for inventory module
+ * Bulk Inventory Update: stock/threshold update for selected products
+ * Homepage payload: curated home sections for enterprise storefront
+ * Flash sale campaign timer support from Promotion module
+ * Audit logging (best-effort, never breaks flows)
+ * Stable independent merchandising allocation
+ * Shop master category registry sync
+ * Brand registry validation from shop config
  * ============================================================
  */
 
@@ -45,6 +46,11 @@ function isValidObjectIdString(id) {
 
 function normalizeText(value) {
   const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function normalizeLooseText(value) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text || null;
 }
 
@@ -353,9 +359,59 @@ function normalizeRegistryCategories(input = []) {
     .sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0));
 }
 
+function normalizeBrandRegistry(input = []) {
+  const list = Array.isArray(input) ? input : [];
+  const out = [];
+  const seen = new Set();
+
+  for (const raw of list) {
+    const value = normalizeLooseText(raw);
+    if (!value) continue;
+
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    out.push(value);
+  }
+
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 async function getShopCategoryRegistry() {
   const shopDoc = await PageConfig.findOne({ key: "shop" }).lean();
   return normalizeRegistryCategories(shopDoc?.data?.categories || []);
+}
+
+async function getShopBrandRegistry() {
+  const shopDoc = await PageConfig.findOne({ key: "shop" }).lean();
+  return normalizeBrandRegistry(shopDoc?.data?.brands || []);
+}
+
+async function assertAllowedBrand(rawBrand) {
+  const brand = normalizeLooseText(rawBrand);
+  if (!brand) return null;
+
+  const brandRegistry = await getShopBrandRegistry();
+  if (!brandRegistry.length) {
+    throw new ApiError(
+      400,
+      "No brand list is configured yet. Add brands from Shop Control first."
+    );
+  }
+
+  const matched = brandRegistry.find(
+    (item) => item.toLowerCase() === brand.toLowerCase()
+  );
+
+  if (!matched) {
+    throw new ApiError(
+      400,
+      "Selected brand is not in the allowed brand list."
+    );
+  }
+
+  return matched;
 }
 
 function buildCollections(rows = [], req, registry = []) {
@@ -624,8 +680,8 @@ exports.list = async (req, res, next) => {
       req.query.sort === "price_asc"
         ? { price: 1, updatedAt: -1, _id: -1 }
         : req.query.sort === "price_desc"
-        ? { price: -1, updatedAt: -1, _id: -1 }
-        : { updatedAt: -1, createdAt: -1, _id: -1 };
+          ? { price: -1, updatedAt: -1, _id: -1 }
+          : { updatedAt: -1, createdAt: -1, _id: -1 };
 
     const [items, total] = await Promise.all([
       Product.find(filter).sort(sort).skip(skip).limit(limit).lean(),
@@ -1374,16 +1430,16 @@ exports.listAdmin = async (req, res, next) => {
       req.query.sort === "price_asc"
         ? { price: 1, _id: -1 }
         : req.query.sort === "price_desc"
-        ? { price: -1, _id: -1 }
-        : req.query.sort === "stock_asc"
-        ? { stock: 1, updatedAt: -1, _id: -1 }
-        : req.query.sort === "stock_desc"
-        ? { stock: -1, updatedAt: -1, _id: -1 }
-        : req.query.sort === "updated_asc"
-        ? { updatedAt: 1, _id: -1 }
-        : req.query.sort === "updated_desc"
-        ? { updatedAt: -1, _id: -1 }
-        : { createdAt: -1, _id: -1 };
+          ? { price: -1, _id: -1 }
+          : req.query.sort === "stock_asc"
+            ? { stock: 1, updatedAt: -1, _id: -1 }
+            : req.query.sort === "stock_desc"
+              ? { stock: -1, updatedAt: -1, _id: -1 }
+              : req.query.sort === "updated_asc"
+                ? { updatedAt: 1, _id: -1 }
+                : req.query.sort === "updated_desc"
+                  ? { updatedAt: -1, _id: -1 }
+                  : { createdAt: -1, _id: -1 };
 
     const [items, total] = await Promise.all([
       Product.find(filter).sort(sort).skip(skip).limit(limit).lean(),
@@ -1770,6 +1826,7 @@ exports.create = async (req, res, next) => {
     }
 
     const normalizedImages = normalizeImages(images, req);
+    const allowedBrand = await assertAllowedBrand(brand);
 
     const doc = await Product.create({
       title: titleStr,
@@ -1781,7 +1838,7 @@ exports.create = async (req, res, next) => {
       stock: Math.max(0, stockNum),
       lowStockThreshold: Math.max(0, thresholdNum),
       category: normalizeText(category),
-      brand: normalizeText(brand),
+      brand: allowedBrand,
       images: normalizedImages,
       isActive: true,
     });
@@ -1874,7 +1931,7 @@ exports.update = async (req, res, next) => {
     }
 
     if (body.brand != null) {
-      update.brand = normalizeText(body.brand);
+      update.brand = await assertAllowedBrand(body.brand);
     }
 
     if (body.images != null) {

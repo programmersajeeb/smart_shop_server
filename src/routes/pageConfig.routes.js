@@ -8,6 +8,7 @@ const requireRole = require("../middlewares/requireRole");
 router.get("/shop", c.getShopPublic);
 router.get("/home", c.getHomePublic);
 router.get("/contact", c.getContactPublic);
+router.get("/collections", c.getCollectionsPublic);
 
 // Public admin settings (safe subset)
 router.get("/admin-settings/public", c.getAdminSettingsPublic);
@@ -37,7 +38,11 @@ router.get(
   "/contact",
   auth,
   requireRole(
-    { mode: "any", minLevel: 100, anyPermissions: ["settings:read", "settings:write"] },
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
     "admin"
   ),
   c.getContact
@@ -53,13 +58,41 @@ router.put(
   c.upsertContact
 );
 
+router.get(
+  "/collections",
+  auth,
+  requireRole(
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
+    "admin"
+  ),
+  c.getCollections
+);
+
+router.put(
+  "/collections",
+  auth,
+  requireRole(
+    { mode: "any", minLevel: 100, anyPermissions: ["settings:write"] },
+    "admin"
+  ),
+  c.upsertCollections
+);
+
 // Admin settings (full doc)
 // GET should allow read OR write
 router.get(
   "/admin-settings",
   auth,
   requireRole(
-    { mode: "any", minLevel: 100, anyPermissions: ["settings:read", "settings:write"] },
+    {
+      mode: "any",
+      minLevel: 100,
+      anyPermissions: ["settings:read", "settings:write"],
+    },
     "admin"
   ),
   c.getAdminSettings

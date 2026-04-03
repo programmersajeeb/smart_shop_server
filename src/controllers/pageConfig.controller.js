@@ -437,6 +437,142 @@ function defaultContactConfig() {
   };
 }
 
+function defaultCollectionsConfig() {
+  return {
+    hero: {
+      eyebrow: "Browse collections",
+      title: "Find your next pick by shopping the way people actually browse.",
+      description:
+        "Explore curated collections, jump into the categories that matter most, and discover what fits your style without extra steps.",
+      primaryCtaLabel: "View all products",
+      primaryCtaHref: "/shop",
+      secondaryCtaLabel: "Shop featured",
+      secondaryCtaHref: "/shop",
+      featuredImage: "",
+      featuredTag: "Featured collection",
+      featuredBadge: "Popular now",
+      statItems: [
+        {
+          id: "collections",
+          label: "Collections",
+          value: "0",
+          hint: "Easy ways to browse",
+        },
+        {
+          id: "products",
+          label: "Products",
+          value: "0",
+          hint: "Across active categories",
+        },
+        {
+          id: "experience",
+          label: "Experience",
+          value: "Mobile first",
+          hint: "Clean, quick and responsive",
+        },
+      ],
+    },
+
+    trustHighlights: [
+      {
+        id: "secure-checkout",
+        title: "Secure checkout",
+        description: "A smooth and dependable checkout experience from cart to order.",
+        iconKey: "ShieldCheck",
+      },
+      {
+        id: "fast-delivery",
+        title: "Fast delivery",
+        description: "Quick handling and a cleaner fulfillment flow for everyday orders.",
+        iconKey: "Truck",
+      },
+      {
+        id: "easy-returns",
+        title: "Easy returns",
+        description: "Simple support when a customer needs help after purchase.",
+        iconKey: "RefreshCcw",
+      },
+      {
+        id: "easy-browsing",
+        title: "Easy browsing",
+        description: "A layout designed to help shoppers reach the right products faster.",
+        iconKey: "CheckCircle2",
+      },
+    ],
+
+    filterPanel: {
+      eyebrow: "Filter collections",
+      title: "Search by category or use the quick filters below.",
+      searchPlaceholder: "Search collections...",
+      emptyTitle: "No collections found",
+      emptyDescription:
+        "Try a different keyword or clear the filters to see everything again.",
+      resetLabel: "Reset filters",
+      resultLabel: "Showing",
+    },
+
+    intro: {
+      eyebrow: "Collections",
+      title: "Browse by category",
+      description:
+        "Pick a collection and jump straight into the products that fit what you want to shop.",
+    },
+
+    collectionCards: [],
+
+    whySection: {
+      eyebrow: "Why shop this way",
+      title: "A simpler way to explore the store",
+      items: [
+        {
+          id: "faster-discovery",
+          text: "Find categories faster without scrolling through everything.",
+        },
+        {
+          id: "cleaner-layout",
+          text: "A cleaner layout that feels easier to read on any screen.",
+        },
+        {
+          id: "mobile-friendly",
+          text: "Better mobile browsing with clearer tap targets and spacing.",
+        },
+        {
+          id: "quick-filters",
+          text: "Quick filters that help narrow things down right away.",
+        },
+      ],
+    },
+
+    finalCta: {
+      eyebrow: "Start shopping",
+      title: "Ready to explore more?",
+      description:
+        "Head over to the shop page to browse all products, compare categories, and keep shopping without extra clicks.",
+      primaryLabel: "Go to shop",
+      primaryHref: "/shop",
+      secondaryLabel: "Contact us",
+      secondaryHref: "/contact",
+      statItems: [
+        {
+          id: "responsive",
+          label: "Easy browsing",
+          value: "Responsive",
+        },
+        {
+          id: "clean-ui",
+          label: "Clear layout",
+          value: "Clean UI",
+        },
+        {
+          id: "mobile",
+          label: "Works best on",
+          value: "Mobile",
+        },
+      ],
+    },
+  };
+}
+
 function defaultAdminSettings() {
   return {
     store: {
@@ -567,10 +703,12 @@ function normalizeSimpleStats(stats) {
   const list = Array.isArray(stats) ? stats : [];
   return list
     .map((item) => ({
+      id: sanitizeString(item?.id, 60),
       label: sanitizeString(item?.label, 40),
       value: sanitizeString(item?.value, 40),
+      hint: sanitizeString(item?.hint, 80),
     }))
-    .filter((item) => item.label || item.value)
+    .filter((item) => item.label || item.value || item.hint)
     .slice(0, 6);
 }
 
@@ -581,6 +719,8 @@ function normalizeSimpleItems(items, limits = {}) {
     descMax = 240,
     nameMax = 60,
     quoteMax = 240,
+    textMax = 220,
+    hintMax = 80,
   } = limits;
 
   const list = Array.isArray(items) ? items : [];
@@ -597,6 +737,12 @@ function normalizeSimpleItems(items, limits = {}) {
       type: sanitizeString(item?.type, 30).toLowerCase(),
       rating: clampInt(item?.rating, 1, 5, 5),
       value: sanitizeString(item?.value, 40),
+      text: sanitizeString(item?.text, textMax),
+      hint: sanitizeString(item?.hint, hintMax),
+      eyebrow: sanitizeString(item?.eyebrow, 40),
+      iconKey: sanitizeString(item?.iconKey, 40),
+      badge: sanitizeString(item?.badge, 40),
+      tag: sanitizeString(item?.tag, 40),
     }))
     .slice(0, maxItems);
 }
@@ -817,6 +963,86 @@ function normalizeContactSocialItems(items, defaults = []) {
   return normalized.length ? normalized : defaults;
 }
 
+function normalizeCollectionsHighlightItem(item, index = 0) {
+  const allowedIcons = new Set([
+    "ShieldCheck",
+    "Truck",
+    "RefreshCcw",
+    "CheckCircle2",
+  ]);
+
+  const iconKey = sanitizeString(item?.iconKey, 40);
+  return {
+    id: sanitizeString(item?.id, 60) || `highlight-${index + 1}`,
+    title: sanitizeString(item?.title, 60) || `Highlight ${index + 1}`,
+    description: sanitizeString(item?.description, 180),
+    iconKey: allowedIcons.has(iconKey) ? iconKey : "ShieldCheck",
+  };
+}
+
+function normalizeCollectionsCard(item, index = 0) {
+  const safeTitle = sanitizeString(item?.title, 80);
+  const safeSlug =
+    sanitizeString(item?.slug, 60) || slugify(item?.title || `collection-${index + 1}`);
+
+  const safeHighlights = Array.isArray(item?.highlights)
+    ? item.highlights
+        .map((entry) => sanitizeString(entry, 40))
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
+
+  return {
+    id: sanitizeString(item?.id, 60) || safeSlug || `collection-${index + 1}`,
+    title: safeTitle || `Collection ${index + 1}`,
+    slug: safeSlug || `collection-${index + 1}`,
+    tag: sanitizeString(item?.tag, 40) || "Collection",
+    badge: sanitizeString(item?.badge, 40),
+    description: sanitizeString(item?.description, 220),
+    image: normalizeUrl(item?.image),
+    href:
+      normalizeUrl(item?.href) ||
+      `/shop?category=${encodeURIComponent(safeTitle || "")}`,
+    iconKey: ALLOWED_ICON_KEYS.has(sanitizeString(item?.iconKey, 30))
+      ? sanitizeString(item?.iconKey, 30)
+      : "ShoppingBag",
+    count: clampInt(item?.count, 0, 999999, 0),
+    isActive: item?.isActive !== false,
+    featured:
+      item?.featured === true ||
+      item?.featured === "true" ||
+      item?.featured === 1 ||
+      item?.featured === "1",
+    sortOrder: clampInt(item?.sortOrder, 0, 999, index + 1),
+    highlights: safeHighlights.length
+      ? safeHighlights
+      : ["Live catalog", "Updated", "Category"],
+  };
+}
+
+function normalizeCollectionsCards(input, defaults = []) {
+  const list = Array.isArray(input) ? input : [];
+  const out = [];
+  const seenIds = new Set();
+
+  for (let i = 0; i < list.length; i += 1) {
+    const item = normalizeCollectionsCard(list[i], i);
+    const idKey = String(item.id || "").toLowerCase();
+    if (!item.title || seenIds.has(idKey)) continue;
+    seenIds.add(idKey);
+    out.push(item);
+  }
+
+  const finalList = out.length ? out : defaults;
+  return finalList
+    .slice(0, 24)
+    .sort((a, b) => {
+      const byOrder = Number(a.sortOrder || 0) - Number(b.sortOrder || 0);
+      if (byOrder !== 0) return byOrder;
+      return String(a.title || "").localeCompare(String(b.title || ""));
+    });
+}
+
 function validateContactPayload(body) {
   const base = defaultContactConfig();
 
@@ -913,6 +1139,129 @@ function validateContactPayload(body) {
   };
 }
 
+function validateCollectionsPayload(body) {
+  const base = defaultCollectionsConfig();
+
+  const heroIn = body?.hero || {};
+  const filterPanelIn = body?.filterPanel || {};
+  const introIn = body?.intro || {};
+  const whySectionIn = body?.whySection || {};
+  const finalCtaIn = body?.finalCta || {};
+
+  const heroStats =
+    normalizeSimpleStats(heroIn.statItems).length > 0
+      ? normalizeSimpleStats(heroIn.statItems)
+      : base.hero.statItems;
+
+  const trustHighlightsSource = Array.isArray(body?.trustHighlights)
+    ? body.trustHighlights
+    : [];
+
+  const trustHighlights = trustHighlightsSource
+    .map((item, index) => normalizeCollectionsHighlightItem(item, index))
+    .slice(0, 4);
+
+  const safeTrustHighlights = trustHighlights.length
+    ? trustHighlights
+    : base.trustHighlights;
+
+  const cards = normalizeCollectionsCards(
+    body?.collectionCards,
+    base.collectionCards
+  );
+
+  const whyItems = normalizeSimpleItems(whySectionIn.items, {
+    maxItems: 6,
+    textMax: 220,
+  })
+    .map((item, index) => ({
+      id: item.id || `why-${index + 1}`,
+      text: item.text || item.description || "",
+    }))
+    .filter((item) => item.text);
+
+  const finalStats =
+    normalizeSimpleStats(finalCtaIn.statItems).length > 0
+      ? normalizeSimpleStats(finalCtaIn.statItems)
+      : base.finalCta.statItems;
+
+  return {
+    hero: {
+      eyebrow: sanitizeString(heroIn.eyebrow, 40) || base.hero.eyebrow,
+      title: sanitizeString(heroIn.title, 140) || base.hero.title,
+      description:
+        sanitizeString(heroIn.description, 320) || base.hero.description,
+      primaryCtaLabel:
+        sanitizeString(heroIn.primaryCtaLabel, 50) || base.hero.primaryCtaLabel,
+      primaryCtaHref:
+        normalizeUrl(heroIn.primaryCtaHref) || base.hero.primaryCtaHref,
+      secondaryCtaLabel:
+        sanitizeString(heroIn.secondaryCtaLabel, 50) ||
+        base.hero.secondaryCtaLabel,
+      secondaryCtaHref:
+        normalizeUrl(heroIn.secondaryCtaHref) || base.hero.secondaryCtaHref,
+      featuredImage: normalizeUrl(heroIn.featuredImage),
+      featuredTag: sanitizeString(heroIn.featuredTag, 40) || base.hero.featuredTag,
+      featuredBadge:
+        sanitizeString(heroIn.featuredBadge, 40) || base.hero.featuredBadge,
+      statItems: heroStats,
+    },
+
+    trustHighlights: safeTrustHighlights,
+
+    filterPanel: {
+      eyebrow:
+        sanitizeString(filterPanelIn.eyebrow, 40) || base.filterPanel.eyebrow,
+      title: sanitizeString(filterPanelIn.title, 140) || base.filterPanel.title,
+      searchPlaceholder:
+        sanitizeString(filterPanelIn.searchPlaceholder, 80) ||
+        base.filterPanel.searchPlaceholder,
+      emptyTitle:
+        sanitizeString(filterPanelIn.emptyTitle, 80) || base.filterPanel.emptyTitle,
+      emptyDescription:
+        sanitizeString(filterPanelIn.emptyDescription, 220) ||
+        base.filterPanel.emptyDescription,
+      resetLabel:
+        sanitizeString(filterPanelIn.resetLabel, 40) || base.filterPanel.resetLabel,
+      resultLabel:
+        sanitizeString(filterPanelIn.resultLabel, 40) || base.filterPanel.resultLabel,
+    },
+
+    intro: {
+      eyebrow: sanitizeString(introIn.eyebrow, 40) || base.intro.eyebrow,
+      title: sanitizeString(introIn.title, 120) || base.intro.title,
+      description:
+        sanitizeString(introIn.description, 240) || base.intro.description,
+    },
+
+    collectionCards: cards,
+
+    whySection: {
+      eyebrow:
+        sanitizeString(whySectionIn.eyebrow, 40) || base.whySection.eyebrow,
+      title: sanitizeString(whySectionIn.title, 120) || base.whySection.title,
+      items: whyItems.length ? whyItems : base.whySection.items,
+    },
+
+    finalCta: {
+      eyebrow: sanitizeString(finalCtaIn.eyebrow, 40) || base.finalCta.eyebrow,
+      title: sanitizeString(finalCtaIn.title, 120) || base.finalCta.title,
+      description:
+        sanitizeString(finalCtaIn.description, 260) || base.finalCta.description,
+      primaryLabel:
+        sanitizeString(finalCtaIn.primaryLabel, 40) || base.finalCta.primaryLabel,
+      primaryHref:
+        normalizeUrl(finalCtaIn.primaryHref) || base.finalCta.primaryHref,
+      secondaryLabel:
+        sanitizeString(finalCtaIn.secondaryLabel, 40) ||
+        base.finalCta.secondaryLabel,
+      secondaryHref:
+        normalizeUrl(finalCtaIn.secondaryHref) || base.finalCta.secondaryHref,
+      statItems: finalStats,
+    },
+  };
+}
+
 function isValidObjectIdString(id) {
   return /^[0-9a-fA-F]{24}$/.test(String(id || "").trim());
 }
@@ -948,7 +1297,7 @@ async function logConfigAction(req, payload) {
       },
     });
   } catch {
-    // ignore audit failure
+    // keep config save flow resilient even if audit logging fails
   }
 }
 
@@ -1438,6 +1787,61 @@ exports.upsertContact = async (req, res, next) => {
       "contact",
       data,
       "pageConfig.contact.update"
+    );
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: doc.key,
+      data: doc.data,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.getCollectionsPublic = async (req, res, next) => {
+  try {
+    const doc = await getOrCreate("collections", defaultCollectionsConfig());
+    const safeData = validateCollectionsPayload(doc?.data || {});
+
+    res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    res.json({
+      key: doc.key,
+      data: safeData,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.getCollections = async (req, res, next) => {
+  try {
+    const doc = await getOrCreate("collections", defaultCollectionsConfig());
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: doc.key,
+      data: validateCollectionsPayload(doc?.data || {}),
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+    });
+  } catch (e) {
+    next(e);
+  }
+};
+
+exports.upsertCollections = async (req, res, next) => {
+  try {
+    const data = validateCollectionsPayload(req.body || {});
+    const doc = await updateConfigWithVersioning(
+      req,
+      "collections",
+      data,
+      "pageConfig.collections.update"
     );
 
     res.set("Cache-Control", "no-store");
