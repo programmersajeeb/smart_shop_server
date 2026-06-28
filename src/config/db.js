@@ -1,5 +1,12 @@
+const dns = require("node:dns");
 const mongoose = require("mongoose");
 const { initGridFS } = require("../services/gridfs.service");
+
+dns.setServers(["8.8.8.8", "1.1.1.1"]);
+
+if (typeof dns.setDefaultResultOrder === "function") {
+  dns.setDefaultResultOrder("ipv4first");
+}
 
 module.exports = async function connectDB(MONGO_URI) {
   const uri = String(MONGO_URI || "").trim();
